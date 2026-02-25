@@ -3,7 +3,7 @@
 ```sh
 # run in root of repo so the build/ts-plug-linux-{platform} can be copied in
 # this is prototype so
-$ buildx build --platform linux/amd64,linux/arm64 -t mostlygeek/ts-plug:owebui-slim -f docker/openwebui/Dockerfile --push .
+$ buildx build --platform linux/amd64,linux/arm64 -t tailscale/ts-plug:owebui-slim -f docker/openwebui/Dockerfile --push .
 ```
 
 ## Running it

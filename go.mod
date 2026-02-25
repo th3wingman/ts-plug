@@ -1,4 +1,4 @@
-module github.com/mostlygeek/ts-plug
+module github.com/tailscale/ts-plug
 
 go 1.25.3
 
