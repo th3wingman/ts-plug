@@ -9,6 +9,7 @@ One-liner tools to expose things to/from your tailnet!
 |--------|---------|----------|
 | **ts-plug** | Expose localhost to your tailnet | Share your dev server to your tailnet, deploy without sidecars |
 | **ts-unplug** | Bring tailnet services to localhost | Access tailnet-based databases/APIs as if they were local |
+| **ts-router** | Bring *many* tailnet hosts to localhost under their real URLs | Type `https://anything.skynet.ts.net/` in the browser and have it just work |
 
 ## Quick Start
 
@@ -28,6 +29,14 @@ make install            # Install to $GOPATH/bin
 ```sh
 ./build/ts-unplug -dir ./state -port 8080 api.tailnet-name.ts.net
 # Access at http://localhost:8080
+```
+
+**ts-router** - Bring many tailnet hosts to localhost under their real URLs:
+```sh
+mkdir -p ~/.config/ts-router/skynet
+$EDITOR ~/.config/ts-router/skynet/routes.json
+./build/ts-router -instance ~/.config/ts-router/skynet -hostname tsrouter-skynet-$(hostname -s)
+# Browse https://ai.skynet.ts.net/, https://mon.skynet.ts.net/, etc.
 ```
 
 ## Key Features
@@ -75,6 +84,7 @@ See [docker/](./docker/) for Pi-hole, Open WebUI, and Audiobookshelf examples.
 - **[Complete Documentation](./docs/)** - Guides, use cases, and detailed examples
 - **[ts-plug Guide](./docs/ts-plug.md)** - Full ts-plug documentation
 - **[ts-unplug Guide](./docs/ts-unplug.md)** - Full ts-unplug documentation
+- **[ts-router Guide](./docs/ts-router.md)** - Full ts-router documentation
 - **[Use Cases](./docs/use-cases.md)** - Real-world scenarios
 - **[Docker Guide](./docs/docker.md)** - Container integration
 
@@ -82,6 +92,7 @@ See [docker/](./docker/) for Pi-hole, Open WebUI, and Audiobookshelf examples.
 ```sh
 ./build/ts-plug -h
 ./build/ts-unplug -h
+./build/ts-router -h
 ```
 
 ## License

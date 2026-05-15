@@ -1,0 +1,27 @@
+{
+  "name": "skynet",
+  "domain": "skynet.ts.net",
+  "dns_listen": "127.0.0.1:5354",
+  "local_ip": "127.0.0.1",
+  "routes": [
+    {
+      "listen": ":9431",
+      "upstream": "logz0.skynet.ts.net:9431"
+    },
+    {
+      "listen": ":443",
+      "sni": "ai.skynet.ts.net",
+      "upstream": "ai.skynet.ts.net:443"
+    },
+    {
+      "listen": ":443",
+      "sni": "mon.skynet.ts.net",
+      "upstream": "mon.skynet.ts.net:443"
+    },
+    {
+      "listen": ":443",
+      "sni": "go.skynet.ts.net",
+      "upstream": "go.skynet.ts.net:443"
+    }
+  ]
+}

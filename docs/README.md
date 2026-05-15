@@ -38,6 +38,26 @@ ts-unplug -dir ./state -port 8080 myserver.tailnet.ts.net
 
 ---
 
+### [ts-router Guide](./ts-router.md)
+Multi-host tailnet → local reverse proxy with built-in DNS. One process, one tailnet identity, many upstreams.
+
+**Topics covered:**
+- Instance directory layout and JSON config
+- TLS SNI dispatch for many `https://` hosts on a single `:443`
+- TCP passthrough for non-443 services
+- Built-in DNS responder + systemd-resolved drop-in management
+- Multi-tailnet on a single workstation
+- Running as a systemd user unit
+
+**Quick start:**
+```sh
+mkdir -p ~/.config/ts-router/skynet
+$EDITOR ~/.config/ts-router/skynet/routes.json
+ts-router -instance ~/.config/ts-router/skynet -hostname tsrouter-skynet-greg
+```
+
+---
+
 ### [Use Cases](./use-cases.md)
 Real-world scenarios and patterns for using ts-plug and ts-unplug.
 
@@ -88,6 +108,8 @@ CMD ["npm", "start"]
 | Deploy in container | ts-plug | Use as Docker ENTRYPOINT |
 | Multi-cloud access | ts-unplug | Multiple instances for each service |
 | Route through remote proxy | ts-unplug | `ts-unplug -dir ./state -port 8888 proxy.ts.net:3128` |
+| Many tailnet hosts as local URLs | ts-router | `ts-router -instance ~/.config/ts-router/skynet` |
+| Browser-native `https://*.skynet.ts.net/` | ts-router | One process, real upstream certs via SNI |
 
 ### Common Flags
 
