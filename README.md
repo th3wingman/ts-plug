@@ -36,7 +36,7 @@ make install            # Install to $GOPATH/bin
 mkdir -p ~/.config/ts-router/skynet
 $EDITOR ~/.config/ts-router/skynet/routes.json
 ./build/ts-router -instance ~/.config/ts-router/skynet -hostname tsrouter-skynet-$(hostname -s)
-# Browse https://ai.skynet.ts.net/, https://mon.skynet.ts.net/, etc.
+# Browse https://ai.skynet.ts.net/, https://app.skynet.ts.net/, etc.
 ```
 
 ## Key Features

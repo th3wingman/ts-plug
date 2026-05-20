@@ -6,7 +6,7 @@
 
 ts-router lets a workstation reach an arbitrary number of tailnet hostnames *as if they were local*, with real upstream certificates and no system tailscaled required. It does three things:
 
-- **TCP passthrough** for plain TCP services on dedicated ports (e.g. `logz0:9431`).
+- **TCP passthrough** for plain TCP services on dedicated ports (e.g. `api:9431`).
 - **TLS SNI dispatch** so many `https://` hosts can share a single local `:443` listener, each terminating to its real upstream with its real cert.
 - **DNS responder** so the original `https://ai.skynet.ts.net/` URL resolves to localhost without `/etc/hosts` edits.
 
@@ -32,9 +32,9 @@ cat > ~/.config/ts-router/skynet/routes.json <<'EOF'
   "local_ip": "127.0.0.1",
   "routes": [
     {"listen": ":443", "sni": "ai.skynet.ts.net",  "upstream": "ai.skynet.ts.net:443"},
-    {"listen": ":443", "sni": "mon.skynet.ts.net", "upstream": "mon.skynet.ts.net:443"},
-    {"listen": ":443", "sni": "go.skynet.ts.net",  "upstream": "go.skynet.ts.net:443"},
-    {"listen": ":9431", "upstream": "logz0.skynet.ts.net:9431"}
+    {"listen": ":443", "sni": "app.skynet.ts.net", "upstream": "app.skynet.ts.net:443"},
+    {"listen": ":443", "sni": "portal.skynet.ts.net",  "upstream": "portal.skynet.ts.net:443"},
+    {"listen": ":9431", "upstream": "api.skynet.ts.net:9431"}
   ]
 }
 EOF
@@ -47,7 +47,7 @@ sudo systemctl restart systemd-resolved
 ts-router -instance ~/.config/ts-router/skynet -hostname tsrouter-skynet-$(hostname -s)
 ```
 
-Open `https://ai.skynet.ts.net/`, `https://mon.skynet.ts.net/`, `http://logz0.skynet.ts.net:9431/` in your browser — they hit the real upstreams with the real certs.
+Open `https://ai.skynet.ts.net/`, `https://app.skynet.ts.net/`, `http://api.skynet.ts.net:9431/` in your browser — they hit the real upstreams with the real certs.
 
 Discover other tailnet hostnames worth routing:
 
@@ -72,14 +72,21 @@ sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/ts-router
 
 ts-router is built around an *instance directory* — one folder per tailnet, containing both routes and tsnet state:
 
-```
-~/.config/ts-router/
-├── skynet/
-│   ├── routes.json
-│   └── state/
-└── homelab/
-    ├── routes.json
-    └── state/
+```mermaid
+graph TD
+    root["~/.config/ts-router/"]
+    sk["skynet/"]
+    hl["homelab/"]
+    skR["routes.json"]
+    skS["state/"]
+    hlR["routes.json"]
+    hlS["state/"]
+    root --> sk
+    root --> hl
+    sk --> skR
+    sk --> skS
+    hl --> hlR
+    hl --> hlS
 ```
 
 This means deleting a tailnet is `rm -rf ~/.config/ts-router/<name>`, and backing one up is `tar`.
@@ -114,29 +121,23 @@ The DNS responder auto-derives the set of local hostnames from the routes: for S
 
 ## How It Works
 
-```
-                                                  ┌─────────────────────┐
-Browser ─https://ai.skynet.ts.net/──→ /etc/resolv  ─┤ systemd-resolved    │
-                                                  │ ~skynet.ts.net split  │
-                                                  └──────────┬──────────┘
-                                                             │ DNS query
-                                                             ▼
-                          ┌──────────────────────────────────────────────┐
-                          │  ts-router (one tsnet identity)              │
-                          │                                              │
-                          │  DNS :5354 ── routed name?    → local_ip     │
-                          │              peer match?      → tailnet IP   │
-                          │              in-domain miss?  → NoData       │
-                          │              out-of-domain?   → REFUSED      │
-                          │                                              │
-                          │  Proxy :443 ── peek SNI ── ai → ts.Dial(ai)  │
-                          │                          mon → ts.Dial(mon) │
-                          │  Proxy :9431 ── pipe TCP ──→ ts.Dial(logz0) │
-                          └────────────────────────┬─────────────────────┘
-                                                   │ tsnet (userspace tailscale)
-                                                   ▼
-                                         real tailnet upstream
-                                         (real TLS cert end-to-end)
+```mermaid
+flowchart TD
+    B["Browser<br/>https://ai.skynet.ts.net/"]
+    R["systemd-resolved<br/>~skynet.ts.net split"]
+    subgraph TR["ts-router (one tsnet identity)"]
+        DNS["DNS :5354<br/>routed name → local_ip<br/>peer match → tailnet IP<br/>in-domain miss → NoData<br/>out-of-domain → REFUSED"]
+        P443["Proxy :443<br/>peek SNI<br/>ai → ts.Dial(ai)<br/>app → ts.Dial(app)"]
+        P9431["Proxy :9431<br/>pipe TCP → ts.Dial(api)"]
+    end
+    U["real tailnet upstream<br/>(real TLS cert end-to-end)"]
+
+    B -->|/etc/resolv| R
+    R -->|DNS query| DNS
+    B -. HTTPS .-> P443
+    B -. TCP .-> P9431
+    P443 -->|tsnet| U
+    P9431 -->|tsnet| U
 ```
 
 The connection between browser and upstream is TLS end-to-end — ts-router never terminates or re-issues a cert. The browser validates the real `*.skynet.ts.net` certificate.
@@ -225,7 +226,7 @@ The drop-in tells systemd-resolved: "send queries matching `~skynet.ts.net` to t
 If you're not running systemd-resolved (or just want a simpler setup), skip `dns_listen`/the resolved subcommands entirely and use `/etc/hosts`:
 
 ```
-127.0.0.1  ai.skynet.ts.net mon.skynet.ts.net go.skynet.ts.net logz0.skynet.ts.net
+127.0.0.1  ai.skynet.ts.net app.skynet.ts.net portal.skynet.ts.net api.skynet.ts.net
 ```
 
 You give up dynamic peer discovery in DNS, but routed names work the same way.

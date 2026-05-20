@@ -6,7 +6,7 @@
   "routes": [
     {
       "listen": ":9431",
-      "upstream": "logz0.skynet.ts.net:9431"
+      "upstream": "api.skynet.ts.net:9431"
     },
     {
       "listen": ":443",
@@ -15,13 +15,13 @@
     },
     {
       "listen": ":443",
-      "sni": "mon.skynet.ts.net",
-      "upstream": "mon.skynet.ts.net:443"
+      "sni": "app.skynet.ts.net",
+      "upstream": "app.skynet.ts.net:443"
     },
     {
       "listen": ":443",
-      "sni": "go.skynet.ts.net",
-      "upstream": "go.skynet.ts.net:443"
+      "sni": "portal.skynet.ts.net",
+      "upstream": "portal.skynet.ts.net:443"
     }
   ]
 }
