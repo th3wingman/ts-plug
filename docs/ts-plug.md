@@ -133,6 +133,23 @@ By default, ts-plug enables HTTPS on port 443 proxying to localhost:8080.
   ts-plug -https-port 8443:3000 -hostname web -- node server.js
   ```
 
+#### TCP
+
+Raw TCP forwarding for protocols that aren't HTTP — SSH, databases, custom binary protocols, etc. No TLS termination, no header injection, just bytes. Access is gated by tailnet membership.
+
+- `-tcp` - Enable TCP listener (default port mapping: 22:22)
+  ```sh
+  # Expose sshd on the tailnet (sshd already running locally on :22)
+  ts-plug -tcp -hostname pi -- sleep infinity
+  # Then from any tailnet device: ssh user@pi.tailnet-name.ts.net
+  ```
+
+- `-tcp-port` - Customize TCP port mapping
+  ```sh
+  # Expose Postgres on tailnet :5432 -> localhost:5432
+  ts-plug -tcp-port 5432 -hostname db -- sleep infinity
+  ```
+
 #### DNS
 
 - `-dns` - Enable DNS listener (default port mapping: 53:53)
@@ -254,6 +271,30 @@ Test webhooks without ngrok:
 ts-plug -public -hostname webhook-test -- python webhook_server.py
 # Use the public URL in GitHub/Stripe/etc webhook settings
 ```
+
+### Headless Deployment (Raspberry Pi, etc.)
+
+Cross-compile and install as a systemd service. Build targets in the Makefile produce static arm64/amd64 binaries:
+
+```sh
+make pi-ts-plug                                  # arm64 (Pi 4 with 64-bit OS)
+# or: make linux-ts-plug                         # builds both arm64 and amd64
+```
+
+A sample unit file lives at [`examples/ts-plug.service`](./examples/ts-plug.service). It runs ts-plug out of `/opt/ts-plug/`, loads `TS_AUTHKEY` from an env file, and uses systemd's `%H` specifier so the tailnet hostname tracks `/etc/hostname`.
+
+```sh
+scp build/ts-plug-linux-arm64 root@host:/opt/ts-plug/ts-plug
+scp docs/examples/ts-plug.service root@host:/etc/systemd/system/
+ssh root@host '
+  echo "TS_AUTHKEY=tskey-auth-..." > /opt/ts-plug/tsplug.env
+  chmod 0600 /opt/ts-plug/tsplug.env
+  systemctl daemon-reload
+  systemctl enable --now ts-plug
+'
+```
+
+The `.data` directory holds tsnet state; once authed, you can rotate or remove `TS_AUTHKEY` from the env file and the node will keep its identity across restarts.
 
 ### Container Deployment
 

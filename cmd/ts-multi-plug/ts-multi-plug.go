@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -43,6 +44,10 @@ var (
 	dnsEnable = flag.Bool("dns", false, "Enable DNS listener (default 53:53)")
 	flagDNS   = NewPortMapFlag(53, 53)
 
+	// TCP flags
+	tcpEnable = flag.Bool("tcp", false, "Enable raw TCP listener (default 22:22)")
+	flagTCP   = NewPortMapFlag(22, 22)
+
 	flagPublic = flag.Bool("public", false, "Enable public https access")
 )
 
@@ -50,6 +55,7 @@ func init() {
 	flag.Var(flagHttp, "http-port", "HTTP port mapping (in:out or port)")
 	flag.Var(flagHttps, "https-port", "HTTPS port mapping (in:out or port)")
 	flag.Var(flagDNS, "dns-port", "DNS port mapping (in:out or port)")
+	flag.Var(flagTCP, "tcp-port", "TCP port mapping (in:out or port)")
 
 	flag.StringVar(&flagHostname, "hostname", "tsmultiplug", "hostname on tailnet")
 	flag.StringVar(&flagHostname, "hn", "tsmultiplug", "hostname on tailnet (short)")
@@ -82,13 +88,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Check that at least one listener is enabled
-	if !flagHttp.IsSet() && !flagHttps.IsSet() && !flagDNS.IsSet() {
-		slog.Info("no listeners enabled, using HTTPS by default")
-		*httpsEnable = true
-	}
-
-	// If boolean flag is set but no custom port, use defaults
+	// Promote boolean enable flags to their default port mapping first,
+	// so the "nothing enabled" check below sees the user's real intent.
 	if *httpEnable && !flagHttp.IsSet() {
 		flagHttp.Set("")
 	}
@@ -97,6 +98,15 @@ func main() {
 	}
 	if *dnsEnable && !flagDNS.IsSet() {
 		flagDNS.Set("")
+	}
+	if *tcpEnable && !flagTCP.IsSet() {
+		flagTCP.Set("")
+	}
+
+	// Default to HTTPS only when the user enabled nothing at all.
+	if !flagHttp.IsSet() && !flagHttps.IsSet() && !flagDNS.IsSet() && !flagTCP.IsSet() {
+		slog.Info("no listeners enabled, using HTTPS by default")
+		flagHttps.Set("")
 	}
 
 	// cmdExitChannel receives the error when cmd.Wait() return
@@ -202,6 +212,16 @@ func main() {
 		go func() {
 			if err := startDNSListener(ctx, ts, lc, hostname, flagDNS); err != nil {
 				slog.Error("DNS listener failed", "error", err)
+				cancelCtx()
+			}
+		}()
+	}
+
+	// Start TCP listener if enabled
+	if flagTCP.IsSet() {
+		go func() {
+			if err := startTCPListener(ctx, ts, hostname, flagTCP); err != nil {
+				slog.Error("TCP listener failed", "error", err)
 				cancelCtx()
 			}
 		}()
@@ -337,6 +357,57 @@ func startDNSListener(ctx context.Context, ts *tsnet.Server, lc *local.Client, h
 			go handleDNSQuery(buffer[:n], clientAddr, tsConn, upstreamAddr)
 		}
 	}
+}
+
+// startTCPListener accepts raw TCP on the tailnet and pipes bytes to a
+// localhost port. No TLS, no header injection — caller-level protocols
+// (SSH, MySQL, etc.) handle their own framing and auth. Access is gated
+// by tailnet membership.
+func startTCPListener(ctx context.Context, ts *tsnet.Server, hostname string, portMap *PortMapFlag) error {
+	listener, err := ts.Listen("tcp", fmt.Sprintf(":%d", portMap.In))
+	if err != nil {
+		return fmt.Errorf("failed to listen on TCP port %d: %w", portMap.In, err)
+	}
+	defer listener.Close()
+
+	slog.Info(fmt.Sprintf("listening at (TCP): %s:%d -> 127.0.0.1:%d", hostname, portMap.In, portMap.Out))
+
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+	}()
+
+	upstreamAddr := fmt.Sprintf("127.0.0.1:%d", portMap.Out)
+	for {
+		client, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("TCP accept error: %w", err)
+		}
+		slog.Info("tcp accepted", slog.String("remote", client.RemoteAddr().String()), slog.String("upstream", upstreamAddr))
+		go handleTCPConn(ctx, client, upstreamAddr)
+	}
+}
+
+// handleTCPConn dials the local upstream and copies bytes bidirectionally
+// until either side closes.
+func handleTCPConn(ctx context.Context, client net.Conn, upstreamAddr string) {
+	defer client.Close()
+
+	d := net.Dialer{Timeout: 5 * time.Second}
+	up, err := d.DialContext(ctx, "tcp", upstreamAddr)
+	if err != nil {
+		slog.Error("failed to dial upstream", "error", err, "upstream", upstreamAddr)
+		return
+	}
+	defer up.Close()
+
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(up, client); done <- struct{}{} }()
+	go func() { io.Copy(client, up); done <- struct{}{} }()
+	<-done
 }
 
 // handleDNSQuery forwards a DNS query to upstream and sends response back

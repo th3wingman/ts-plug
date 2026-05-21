@@ -51,6 +51,19 @@ linux-ts-router:
 	GOOS=linux GOARCH=arm64 go build -o build/ts-router-linux-arm64 ./cmd/ts-router
 	GOOS=linux GOARCH=amd64 go build -o build/ts-router-linux-amd64 ./cmd/ts-router
 
+# Raspberry Pi 4 (64-bit Raspberry Pi OS / Ubuntu) — arm64.
+# Use `pi` for the full set, or `pi-ts-plug` for just the plug binary.
+pi: pi-ts-plug pi-ts-unplug pi-ts-router
+
+pi-ts-plug:
+	GOOS=linux GOARCH=arm64 go build -o build/ts-plug-linux-arm64 ./cmd/ts-multi-plug
+
+pi-ts-unplug:
+	GOOS=linux GOARCH=arm64 go build -o build/ts-unplug-linux-arm64 ./cmd/ts-unplug
+
+pi-ts-router:
+	GOOS=linux GOARCH=arm64 go build -o build/ts-router-linux-arm64 ./cmd/ts-router
+
 install: binaries
 	cp build/ts-plug $(GOPATH)/bin/ts-plug
 	cp build/ts-unplug $(GOPATH)/bin/ts-unplug
@@ -78,4 +91,4 @@ test: examples
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router linux linux-ts-plug linux-ts-unplug linux-ts-router install install-ts-router
+.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router linux linux-ts-plug linux-ts-unplug linux-ts-router pi pi-ts-plug pi-ts-unplug pi-ts-router install install-ts-router
