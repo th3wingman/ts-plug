@@ -26,6 +26,13 @@ ts-unplug:
 ts-router:
 	go build -o build/ts-router ./cmd/ts-router
 
+# ts-multinet is Linux-only (raw TUN + gVisor) and experimental; not in `all`.
+ts-multinet:
+	go build -o build/ts-multinet ./cmd/ts-multinet
+
+docker-ts-multinet:
+	docker build -f cmd/ts-multinet/Dockerfile -t ts-multinet .
+
 darwin: darwin-ts-plug darwin-ts-unplug darwin-ts-router
 
 darwin-ts-plug:
@@ -91,4 +98,4 @@ test: examples
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router linux linux-ts-plug linux-ts-unplug linux-ts-router pi pi-ts-plug pi-ts-unplug pi-ts-router install install-ts-router
+.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router ts-multinet docker-ts-multinet darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router linux linux-ts-plug linux-ts-unplug linux-ts-router pi pi-ts-plug pi-ts-unplug pi-ts-router install install-ts-router
