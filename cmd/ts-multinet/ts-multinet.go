@@ -47,6 +47,9 @@ func main() {
 	flagConfig := flag.String("config", "/etc/ts-multinet/config.json", "path to JSON config")
 	flagSetResolv := flag.Bool("set-resolv", true, "overwrite /etc/resolv.conf to point at the built-in responder")
 	flagLog := flag.String("log", "info", "log level (debug|info|warn|error)")
+	flagPorts := flag.String("ports", "22,80,443,8080", "ports to probe in `peers`")
+	flagProbe := flag.Bool("probe", true, "probe ports of online peers in `peers`")
+	flag.Usage = usage
 	flag.Parse()
 
 	setLogLevel(*flagLog)
@@ -57,12 +60,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Subcommand: `peers` lists each tailnet's peers and exits.
-	if args := flag.Args(); len(args) == 1 && args[0] == "peers" {
+	// Subcommands: peers [filter] | check <host[:port]>.
+	if args := flag.Args(); len(args) >= 1 {
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
-		runPeers(ctx, cfg)
-		return
+		base := orDefault(cfg.StateDir, ".state")
+		switch args[0] {
+		case "peers":
+			filter := ""
+			if len(args) >= 2 {
+				filter = args[1]
+			}
+			runPeers(ctx, cfg, filter, parsePorts(*flagPorts), *flagProbe)
+			return
+		case "check":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: ts-multinet check <host[:port]>")
+				os.Exit(1)
+			}
+			runCheck(ctx, cfg, args[1], base)
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", args[0])
+			usage()
+			os.Exit(1)
+		}
 	}
 
 	reg, err := newRegistry(cfg.Tailnets)
@@ -120,6 +142,19 @@ func main() {
 	for _, tn := range nets {
 		tn.Close()
 	}
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, `ts-multinet — several tailnets transparently on one host
+
+usage:
+  ts-multinet [flags]                 run the daemon (TUNs + DNS + forwarders)
+  ts-multinet [flags] peers [filter]  list peers and probe their services
+  ts-multinet [flags] check <host[:port]>  diagnose one target end-to-end
+
+flags:
+`)
+	flag.PrintDefaults()
 }
 
 func loadConfig(path string) (*Config, error) {

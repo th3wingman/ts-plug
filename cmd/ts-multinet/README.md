@@ -82,6 +82,41 @@ docker exec -it <container> curl -sk https://<host>.othernet.ts.net/
 Both resolve and connect at the same time, each over its own tailnet, with an
 unmodified `curl`.
 
+## Discovering hosts & diagnosing
+
+You don't have to guess what's on your tailnets. These run standalone (no TUNs,
+no caps) — use a throwaway container so they don't fight the daemon for state:
+
+```sh
+# What hosts exist, and what do they actually serve? (probes :22,:80,:443,:8080)
+docker run --rm -e TS_AUTHKEY_SKYNET -e TS_AUTHKEY_TSJUSTWORKS -e TS_AUTHKEY_BORDER0_COM \
+  ts-multinet peers                 # everything (pass a filter on big tailnets)
+docker run --rm ... ts-multinet peers rpi4            # name filter
+docker run --rm ... ts-multinet -ports 22,5432,3000 peers db   # custom ports
+```
+```
+== skynet (tail523555.ts.net) — 2 shown, 2 up ==
+  STATE NAME            IP              OS     SERVICES
+  UP    rpi4-sk-01      100.82.224.14   linux  :22
+  UP    rpi4-st-gw-01   100.72.240.52   linux  :22
+```
+
+```sh
+# Why did that connection hang/fail? Walk the whole path for one target:
+docker run --rm ... ts-multinet check rpi4-sk-01.tail523555.ts.net:22
+```
+```
+host:      rpi4-sk-01.tail523555.ts.net
+tailnet:   skynet (tail523555.ts.net)
+resolve:   rpi4-sk-01.tail523555.ts.net -> 100.82.224.14
+dial:      100.82.224.14:22 over skynet ...
+result:    OPEN (230ms) — banner: SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.2
+```
+
+`check` tells you which step broke: `resolve FAILED` (not a peer), `UNREACHABLE`
+(refused/timeout, with the reason), or `OPEN` with the latency — so a slow path
+reads as `OPEN (7.2s)`, not a mystery hang.
+
 ## Limitations (MVP)
 
 - **TCP only.** UDP and ICMP packets are dropped. (DNS works because the
