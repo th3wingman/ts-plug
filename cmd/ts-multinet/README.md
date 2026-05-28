@@ -84,45 +84,49 @@ unmodified `curl`.
 
 ## Discovering hosts & diagnosing
 
-You don't have to guess what's on your tailnets. These run standalone (no TUNs,
-no caps) — use a throwaway container so they don't fight the daemon for state:
+The daemon serves a control socket; `status`/`peers`/`check` are thin clients
+that query it. Run them **inside the running daemon** — no second tsnet stack,
+no state/`:53`/authkey collisions:
 
 ```sh
-# What hosts exist, and what do they actually serve? (probes :22,:80,:443,:8080)
-docker run --rm -e TS_AUTHKEY_SKYNET -e TS_AUTHKEY_TSJUSTWORKS -e TS_AUTHKEY_BORDER0_COM \
-  ts-multinet peers                 # everything (pass a filter on big tailnets)
-docker run --rm ... ts-multinet peers rpi4            # name filter
-docker run --rm ... ts-multinet -ports 22,5432,3000 peers db   # custom ports
+docker exec tsm ts-multinet status              # tailnets, our assigned IPs, peer counts
+docker exec tsm ts-multinet peers               # all hosts + probed services (filter on big tailnets)
+docker exec tsm ts-multinet peers rpi4          # name filter
+docker exec tsm -ports 22,5432,3000 ts-multinet peers db
+docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
 ```
 ```
 == skynet (tail523555.ts.net) — 2 shown, 2 up ==
   STATE NAME            IP              OS     SERVICES
   UP    rpi4-sk-01      100.82.224.14   linux  :22
   UP    rpi4-st-gw-01   100.72.240.52   linux  :22
-```
 
-```sh
-# Why did that connection hang/fail? Walk the whole path for one target:
-docker run --rm ... ts-multinet check rpi4-sk-01.tail523555.ts.net:22
-```
-```
 host:      rpi4-sk-01.tail523555.ts.net
 tailnet:   skynet (tail523555.ts.net)
 resolve:   rpi4-sk-01.tail523555.ts.net -> 100.82.224.14
-dial:      100.82.224.14:22 over skynet ...
-result:    OPEN (230ms) — banner: SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.2
+result:    OPEN (60ms) — banner: SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.2
 ```
 
 `check` tells you which step broke: `resolve FAILED` (not a peer), `UNREACHABLE`
 (refused/timeout, with the reason), or `OPEN` with the latency — so a slow path
 reads as `OPEN (7.2s)`, not a mystery hang.
 
-## Limitations (MVP)
+## Protocols
 
-- **TCP only.** UDP and ICMP packets are dropped. (DNS works because the
-  responder is a real UDP listener, not via the TUN.)
+- **TCP** — terminated on the TUN, re-dialed over the tailnet.
+- **UDP** — per-flow relay with a 60s idle reap (UDP has no close).
+- **ICMP echo** — `ping host.tailnet` is proxied: we probe the real peer over
+  the tailnet (TSMP, works even if it firewalls ICMP) and answer with the real
+  round-trip latency. No reply means the host is genuinely unreachable.
+
+Our node's assigned `100.x` is also placed on each TUN, so the kernel sources
+synthetic-range traffic correctly instead of bouncing off the container's eth0.
+
+## Limitations
+
 - **Name-based only.** Connecting to a literal `100.x` tailnet IP isn't steered
   — that's the overlapping-CGNAT case the synthetic ranges exist to avoid.
 - **Container netns assumed.** Running on the host would rewrite the host's
   `/etc/resolv.conf` and add host routes. Use `-set-resolv=false` and wire DNS
   yourself if you try that.
+- **IPv4 synthetic only.** AAAA queries return empty so clients fall back to A.

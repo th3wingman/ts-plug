@@ -49,6 +49,7 @@ func main() {
 	flagLog := flag.String("log", "info", "log level (debug|info|warn|error)")
 	flagPorts := flag.String("ports", "22,80,443,8080", "ports to probe in `peers`")
 	flagProbe := flag.Bool("probe", true, "probe ports of online peers in `peers`")
+	flagSock := flag.String("control-sock", "/run/ts-multinet/control.sock", "control socket path (daemon serves it; peers/check/status query it)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -60,31 +61,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Subcommands: peers [filter] | check <host[:port]>.
+	// Subcommands are thin clients that query the running daemon's control
+	// socket — they never bring up their own tsnet stacks.
 	if args := flag.Args(); len(args) >= 1 {
-		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer cancel()
-		base := orDefault(cfg.StateDir, ".state")
 		switch args[0] {
+		case "status":
+			runStatusClient(*flagSock)
 		case "peers":
 			filter := ""
 			if len(args) >= 2 {
 				filter = args[1]
 			}
-			runPeers(ctx, cfg, filter, parsePorts(*flagPorts), *flagProbe)
-			return
+			ports := *flagPorts
+			if !*flagProbe {
+				ports = ""
+			}
+			runPeersClient(*flagSock, filter, ports)
 		case "check":
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "usage: ts-multinet check <host[:port]>")
 				os.Exit(1)
 			}
-			runCheck(ctx, cfg, args[1], base)
-			return
+			runCheckClient(*flagSock, args[1])
 		default:
 			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", args[0])
 			usage()
 			os.Exit(1)
 		}
+		return
 	}
 
 	reg, err := newRegistry(cfg.Tailnets)
@@ -137,6 +141,9 @@ func main() {
 	}
 	slog.Info("all tailnets up", "count", len(nets))
 
+	daemon := &Daemon{tailnets: nets, reg: reg}
+	go daemon.serveControl(ctx, *flagSock)
+
 	<-ctx.Done()
 	slog.Info("shutting down")
 	for _, tn := range nets {
@@ -148,9 +155,12 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `ts-multinet — several tailnets transparently on one host
 
 usage:
-  ts-multinet [flags]                 run the daemon (TUNs + DNS + forwarders)
+  ts-multinet [flags]                 run the daemon (TUNs + DNS + forwarders + control socket)
+  ts-multinet [flags] status          show tailnets, our assigned IPs, peer counts
   ts-multinet [flags] peers [filter]  list peers and probe their services
   ts-multinet [flags] check <host[:port]>  diagnose one target end-to-end
+
+(status/peers/check query the running daemon over its control socket.)
 
 flags:
 `)

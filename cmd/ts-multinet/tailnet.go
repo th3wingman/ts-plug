@@ -7,20 +7,28 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"tailscale.com/client/local"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
-// Tailnet ties one stock tsnet node to its own TUN + forwarder.
+// Tailnet ties one stock tsnet node to its own TUN + forwarder, and carries the
+// handles the control plane needs to answer queries.
 type Tailnet struct {
-	conf TailnetConf
-	ts   *tsnet.Server
-	tun  *os.File
+	conf       TailnetConf
+	ts         *tsnet.Server
+	tun        *os.File
+	lc         *local.Client
+	suffix     string
+	assignedIP string
+	resolve    resolveFunc
 }
 
 func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint32, baseDir string) (*Tailnet, error) {
@@ -62,33 +70,65 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	}
 	reg.registerSuffix(conf.Name, conf.Suffix)
 
+	lc, err := ts.LocalClient()
+	if err != nil {
+		ts.Close()
+		return nil, fmt.Errorf("local client: %w", err)
+	}
+
 	tun, dev, err := openTUN(conf.TUN)
 	if err != nil {
+		ts.Close()
 		return nil, err
 	}
 	if err := bringUp(dev, mtu); err != nil {
 		tun.Close()
+		ts.Close()
 		return nil, err
 	}
 	if err := addRoute(conf.CIDR, dev); err != nil {
 		tun.Close()
+		ts.Close()
 		return nil, err
 	}
-	slog.Info("tailnet ready", "name", conf.Name, "tun", dev, "cidr", conf.CIDR, "suffix", conf.Suffix)
 
-	lc, err := ts.LocalClient()
-	if err != nil {
-		tun.Close()
-		return nil, fmt.Errorf("local client: %w", err)
+	// Put our assigned tailnet IP on the TUN so the kernel sources
+	// synthetic-range traffic from it rather than from eth0.
+	var assigned string
+	if ip4, _ := ts.TailscaleIPs(); ip4.IsValid() {
+		assigned = ip4.String()
+		if err := addAddr(dev, assigned+"/32"); err != nil {
+			slog.Warn("could not add assigned IP to TUN", "name", conf.Name, "ip", assigned, "err", err)
+		}
 	}
-	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, newTailnetResolver(lc))
+
+	slog.Info("tailnet ready", "name", conf.Name, "tun", dev, "cidr", conf.CIDR,
+		"suffix", conf.Suffix, "ip", assigned)
+
+	resolve := newTailnetResolver(lc)
+	tn := &Tailnet{conf: conf, ts: ts, tun: tun, lc: lc, suffix: conf.Suffix, assignedIP: assigned, resolve: resolve}
+
+	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, resolve, newPinger(lc))
 	go func() {
 		if err := fwd.run(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("forwarder exited", "name", conf.Name, "err", err)
 		}
 	}()
 
-	return &Tailnet{conf: conf, ts: ts, tun: tun}, nil
+	return tn, nil
+}
+
+// newPinger probes real reachability to a tailnet IP over the tailnet. TSMP
+// traverses to the peer at the IP layer (works even if the peer firewalls
+// ICMP) and yields a real round-trip latency.
+func newPinger(lc *local.Client) func(ctx context.Context, ip netip.Addr) (time.Duration, bool) {
+	return func(ctx context.Context, ip netip.Addr) (time.Duration, bool) {
+		res, err := lc.Ping(ctx, ip, tailcfg.PingTSMP)
+		if err != nil || res == nil || res.Err != "" || res.LatencySeconds <= 0 {
+			return 0, false
+		}
+		return time.Duration(res.LatencySeconds * float64(time.Second)), true
+	}
 }
 
 // newTailnetResolver resolves an FQDN to a real tailnet IP using the tailnet's

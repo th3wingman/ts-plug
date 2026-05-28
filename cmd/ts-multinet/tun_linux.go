@@ -50,6 +50,12 @@ func addRoute(cidr, dev string) error {
 	return run("ip", "route", "replace", cidr, "dev", dev)
 }
 
+// addAddr puts an address on the device so the kernel sources synthetic-range
+// traffic from it (our real tailnet IP) instead of bouncing off eth0.
+func addAddr(dev, ipCIDR string) error {
+	return run("ip", "addr", "add", ipCIDR, "dev", dev)
+}
+
 func run(args ...string) error {
 	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
 	if err != nil {

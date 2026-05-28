@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
@@ -35,9 +37,12 @@ type dialFunc func(ctx context.Context, network, address string) (net.Conn, erro
 // re-enter our hijacked DNS responder and loop straight back into this TUN.
 type resolveFunc func(ctx context.Context, host string) (string, bool)
 
-// forwarder runs a userspace TCP/IP stack on one TUN fd. Every TCP connection
-// it accepts is resolved to a real tailnet IP and re-dialed out over the
-// tailnet.
+// pingFunc probes real reachability of a tailnet IP, returning RTT on success.
+type pingFunc func(ctx context.Context, ip netip.Addr) (time.Duration, bool)
+
+// forwarder runs a userspace TCP/IP stack on one TUN fd. TCP and UDP flows are
+// resolved to a real tailnet IP and re-dialed over the tailnet; ICMP echo is
+// proxied via a tailnet ping and answered by hand.
 type forwarder struct {
 	name    string
 	tun     *os.File
@@ -45,19 +50,20 @@ type forwarder struct {
 	reg     *registry
 	dial    dialFunc
 	resolve resolveFunc
+	ping    pingFunc
 
 	stack *stack.Stack
 	ep    *channel.Endpoint
 }
 
-func newForwarder(name string, tun *os.File, mtu uint32, reg *registry, dial dialFunc, resolve resolveFunc) *forwarder {
-	return &forwarder{name: name, tun: tun, mtu: mtu, reg: reg, dial: dial, resolve: resolve}
+func newForwarder(name string, tun *os.File, mtu uint32, reg *registry, dial dialFunc, resolve resolveFunc, ping pingFunc) *forwarder {
+	return &forwarder{name: name, tun: tun, mtu: mtu, reg: reg, dial: dial, resolve: resolve, ping: ping}
 }
 
 func (f *forwarder) run(ctx context.Context) error {
 	f.stack = stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
+		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 	f.ep = channel.New(512, f.mtu, "")
 	if err := f.stack.CreateNIC(nicID, f.ep); err != nil {
@@ -72,8 +78,9 @@ func (f *forwarder) run(ctx context.Context) error {
 		{Destination: header.IPv6EmptySubnet, NIC: nicID},
 	})
 
-	fwd := tcp.NewForwarder(f.stack, 0, 2048, f.handle)
-	f.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
+	tcpFwd := tcp.NewForwarder(f.stack, 0, 2048, f.handle)
+	f.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
+	f.setupUDP() // udp.go
 
 	go f.tunToStack(ctx)
 	go f.stackToTun(ctx)
@@ -101,6 +108,12 @@ func (f *forwarder) tunToStack(ctx context.Context) {
 		var proto tcpip.NetworkProtocolNumber
 		switch buf[0] >> 4 {
 		case 4:
+			// ICMPv4 echo is proxied out-of-band (icmp.go), not via the stack.
+			if isICMPv4Echo(buf[:n]) {
+				pktCopy := append([]byte(nil), buf[:n]...)
+				go f.handleICMPv4Echo(pktCopy)
+				continue
+			}
 			proto = header.IPv4ProtocolNumber
 		case 6:
 			proto = header.IPv6ProtocolNumber
