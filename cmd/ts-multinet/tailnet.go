@@ -106,6 +106,7 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 		"suffix", conf.Suffix, "ip", assigned)
 
 	resolve := newTailnetResolver(lc)
+	reg.registerResolver(conf.Name, resolve) // lets DNS verify peer existence (search fallthrough)
 	tn := &Tailnet{conf: conf, ts: ts, tun: tun, lc: lc, suffix: conf.Suffix, assignedIP: assigned, resolve: resolve}
 
 	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, resolve, newPinger(lc))

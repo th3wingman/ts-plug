@@ -51,6 +51,24 @@ sources synthetic-range traffic from it instead of bouncing off the container's
 | UDP | per-flow relay with a 60s idle reap (UDP never closes itself) |
 | ICMP echo | `ping` proxied: probe the real peer over the tailnet (TSMP — works even if it firewalls ICMP), answer with the real RTT; no reply ⇒ genuinely unreachable |
 
+### Name resolution
+
+Three forms all resolve to the same host:
+
+| Form | Example | How |
+|---|---|---|
+| Full MagicDNS FQDN | `rpi4-sk-01.tail523555.ts.net` | real suffix match |
+| Friendly alias | `rpi4-sk-01.skynet` | config `name` accepted as an alias suffix, canonicalized to the real FQDN |
+| Bare hostname | `rpi4-sk-01` | resolv.conf `search <names>` expands it; tried against each tailnet |
+
+The responder is **existence-aware**: it only answers if the host is a real peer
+on that tailnet (checked via the peer list), and returns **NXDOMAIN** otherwise.
+That's what makes bare-name search work — a libc resolver walking its search
+list falls through a tailnet's NXDOMAIN to the next, landing on whichever tailnet
+actually has the host. Bare names that collide across tailnets resolve in config
+order. `check` does the same expansion itself (it gets the raw arg, no libc
+search), via `registry.locate`.
+
 ### Control plane
 
 The daemon serves a JSON API over a unix socket

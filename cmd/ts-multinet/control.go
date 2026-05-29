@@ -165,42 +165,57 @@ func (d *Daemon) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	res := checkJSON{Host: host}
 
-	for _, tn := range d.tailnets {
-		if host != tn.suffix && !strings.HasSuffix(host, "."+tn.suffix) {
-			continue
-		}
-		res.Tailnet, res.Suffix = tn.conf.Name, tn.suffix
-		ip, ok := tn.resolve(r.Context(), host)
-		if !ok {
-			res.Result = "resolve_failed"
-			writeJSON(w, res)
-			return
-		}
-		res.ResolvedIP = ip
-		target := net.JoinHostPort(ip, strconv.Itoa(port))
-		start := time.Now()
-		dctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		conn, err := tn.ts.Dial(dctx, "tcp", target)
-		res.LatencyMS = time.Since(start).Milliseconds()
-		cancel()
-		if err != nil {
-			res.Result, res.Detail = "unreachable", err.Error()
-			writeJSON(w, res)
-			return
-		}
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		b := make([]byte, 96)
-		n, _ := conn.Read(b)
-		conn.Close()
-		res.Result = "open"
-		if n > 0 {
-			res.Banner = printable(b[:n])
-		}
+	// locate handles fqdn, friendly alias (host.skynet), and bare names
+	// (tried against each tailnet) — same resolution `ping` gets via search.
+	tailnet, realFQDN, ok := d.reg.locate(r.Context(), host)
+	if !ok {
+		res.Result = "resolve_failed"
 		writeJSON(w, res)
 		return
 	}
-	res.Result = "no_tailnet"
+	tn := d.tailnetByName(tailnet)
+	if tn == nil {
+		res.Result = "no_tailnet"
+		writeJSON(w, res)
+		return
+	}
+	res.Tailnet, res.Suffix = tn.conf.Name, tn.suffix
+	ip, ok := tn.resolve(r.Context(), realFQDN)
+	if !ok {
+		res.Result = "resolve_failed"
+		writeJSON(w, res)
+		return
+	}
+	res.ResolvedIP = ip
+	target := net.JoinHostPort(ip, strconv.Itoa(port))
+	start := time.Now()
+	dctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	conn, err := tn.ts.Dial(dctx, "tcp", target)
+	res.LatencyMS = time.Since(start).Milliseconds()
+	cancel()
+	if err != nil {
+		res.Result, res.Detail = "unreachable", err.Error()
+		writeJSON(w, res)
+		return
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	b := make([]byte, 96)
+	n, _ := conn.Read(b)
+	conn.Close()
+	res.Result = "open"
+	if n > 0 {
+		res.Banner = printable(b[:n])
+	}
 	writeJSON(w, res)
+}
+
+func (d *Daemon) tailnetByName(name string) *Tailnet {
+	for _, tn := range d.tailnets {
+		if strings.EqualFold(tn.conf.Name, name) {
+			return tn
+		}
+	}
+	return nil
 }
 
 // probePeers dials each online peer's ports over the tailnet, returning the open

@@ -118,7 +118,17 @@ func main() {
 	slog.Info("dns responder up", "listen", orDefault(cfg.DNSListen, "127.0.0.1:53"), "upstream", upstream)
 
 	if *flagSetResolv {
-		if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver 127.0.0.1\n"), 0644); err != nil {
+		// search = friendly tailnet names, so `ping host` expands to
+		// host.<tailnet> and resolves against whichever tailnet actually has it.
+		names := make([]string, 0, len(cfg.Tailnets))
+		for _, tc := range cfg.Tailnets {
+			names = append(names, tc.Name)
+		}
+		resolv := "nameserver 127.0.0.1\n"
+		if len(names) > 0 {
+			resolv += "search " + strings.Join(names, " ") + "\n"
+		}
+		if err := os.WriteFile("/etc/resolv.conf", []byte(resolv), 0644); err != nil {
 			slog.Warn("could not rewrite /etc/resolv.conf", "err", err)
 		}
 	}

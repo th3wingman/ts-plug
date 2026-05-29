@@ -101,9 +101,14 @@ func runCheckClient(sock, target string) {
 		fmt.Printf("result:    no configured tailnet matches that suffix\n")
 		return
 	case "resolve_failed":
-		fmt.Printf("tailnet:   %s (%s)\n", res.Tailnet, res.Suffix)
-		fmt.Printf("resolve:   FAILED — not a known peer on this tailnet\n")
-		fmt.Printf("           (run `peers %s` to see what exists)\n", res.Tailnet)
+		if res.Tailnet != "" {
+			fmt.Printf("tailnet:   %s (%s)\n", res.Tailnet, res.Suffix)
+			fmt.Printf("resolve:   FAILED — not a known peer on %s\n", res.Tailnet)
+			fmt.Printf("           (run `peers %s` to see what exists)\n", res.Tailnet)
+		} else {
+			fmt.Printf("resolve:   FAILED — no peer by that name on any tailnet\n")
+			fmt.Printf("           (run `peers` to list, or try host.<tailnet>)\n")
+		}
 		return
 	}
 	fmt.Printf("tailnet:   %s (%s)\n", res.Tailnet, res.Suffix)
