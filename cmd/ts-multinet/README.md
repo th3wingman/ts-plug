@@ -8,8 +8,11 @@ userspace **tsnet** node; in front of each we run a small gVisor TCP/IP stack on
 its own TUN device (tun2socks style) and re-dial every connection out through
 that tailnet.
 
-> **Status: MVP / RnD.** Linux only, TCP only, meant to run inside a container
-> network namespace. macOS/Windows and UDP/ICMP are future work.
+> **Status: MVP / RnD.** Linux only, runs inside a container network namespace.
+> TCP, UDP, and ICMP-echo work; macOS/Windows and host-wide mode are future work.
+>
+> For architecture, the full `tailscaled` comparison, and continuation notes
+> (code map, gotchas, roadmap), see **[docs/ts-multinet.md](../../docs/ts-multinet.md)**.
 
 ## How it works
 
