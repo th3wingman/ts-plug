@@ -10,6 +10,7 @@ One-liner tools to expose things to/from your tailnet!
 | **ts-plug** | Expose localhost to your tailnet | Share your dev server to your tailnet, deploy without sidecars |
 | **ts-unplug** | Bring tailnet services to localhost | Access tailnet-based databases/APIs as if they were local |
 | **ts-router** | Bring *many* tailnet hosts to localhost under their real URLs | Type `https://anything.skynet.ts.net/` in the browser and have it just work |
+| **ts-multinet** *(RnD)* | Several tailnets transparently on one host at once | Reach services across many tailnets simultaneously — the thing `tailscaled` can't do. See [docs](./docs/ts-multinet.md) |
 
 ## Quick Start
 

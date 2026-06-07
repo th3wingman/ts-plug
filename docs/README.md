@@ -58,6 +58,25 @@ ts-router -instance ~/.config/ts-router/skynet -hostname tsrouter-skynet-greg
 
 ---
 
+### [ts-multinet Guide](./ts-multinet.md)
+**RnD:** several tailnets transparently on one host at once — the thing `tailscaled` can't do. Userspace tun2socks-over-tsnet with synthetic-IP DNS steering.
+
+**Topics covered:**
+- Architecture (double gVisor stack, synthetic `198.18.0.0/15` ranges, control socket)
+- TCP / UDP / ICMP-echo behavior
+- Full comparison vs a `tailscaled` client (fidelity, coverage, performance trade-offs)
+- Why XDP/eBPF is the wrong tool here
+- **Continuation notes:** code map, build/test, hard-won gotchas, roadmap
+
+**Quick start:**
+```sh
+docker run -d --name tsm --cap-add NET_ADMIN --device /dev/net/tun \
+  -e TS_AUTHKEY_FOO -e TS_AUTHKEY_BAR ts-multinet
+docker exec tsm ts-multinet status
+```
+
+---
+
 ### [Use Cases](./use-cases.md)
 Real-world scenarios and patterns for using ts-plug and ts-unplug.
 

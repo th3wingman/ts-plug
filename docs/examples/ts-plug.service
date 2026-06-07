@@ -1,0 +1,34 @@
+# Sample systemd unit for running ts-plug as a long-lived service.
+#
+# Layout this unit assumes:
+#   /opt/ts-plug/ts-plug         (binary)
+#   /opt/ts-plug/tsplug.env      (env file, mode 0600, contains TS_AUTHKEY=...)
+#   /opt/ts-plug/.data           (tsnet state, persists node identity across restarts)
+#
+# Install:
+#   sudo install -d -m 0755 /opt/ts-plug
+#   sudo install -m 0755 ts-plug-linux-arm64 /opt/ts-plug/ts-plug
+#   echo 'TS_AUTHKEY=tskey-auth-...' | sudo tee /opt/ts-plug/tsplug.env
+#   sudo chmod 0600 /opt/ts-plug/tsplug.env
+#   sudo cp ts-plug.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ts-plug.service
+#
+# %H expands to the system hostname at runtime, so the tailnet node name
+# tracks /etc/hostname. Edit ExecStart to change listeners (-tcp, -https, etc.).
+
+[Unit]
+Description=ts-plug: expose local services to the tailnet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/ts-plug/tsplug.env
+WorkingDirectory=/opt/ts-plug
+ExecStart=/opt/ts-plug/ts-plug -tcp -hostname %H -dir /opt/ts-plug/.data -- /bin/sleep infinity
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
