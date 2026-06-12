@@ -48,6 +48,17 @@ $EDITOR ~/.config/ts-router/skynet/routes.json
 - Reverse proxies to localhost:8080
 - Optional public access with `-public`
 - Supports HTTP, HTTPS, and DNS protocols
+- Injects the caller's tailnet identity as `Tailscale-User-Login/-Name/-Profile-Pic` headers, overwritten on every request so clients can't spoof them
+
+**Identity header mapping** — apps that expect a different auth-proxy dialect work unmodified:
+```sh
+# Map identity fields to custom header names (login, name, pic)
+ts-plug -hn myapp -header-map login=X-Auth-Email,name=X-Auth-Name -- ./myapp
+
+# Border0 preset: X-Auth-Email, X-Auth-Name, X-Auth-Picture
+ts-plug -hn myapp -border0 -https-port 443:8181 -- ./myapp
+```
+Mapped headers get the same overwrite-always treatment as the `Tailscale-User-*` set. With `-public`, public visitors arrive with blank identity headers — make sure the upstream has a fallback auth tier. Slow upstreams (e.g. LLM apps) can raise `-upstream-timeout` (default 30s) to allow longer time-to-first-byte.
 
 **ts-unplug** provides:
 - Reverse proxy from tailnet to localhost
