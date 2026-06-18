@@ -49,6 +49,12 @@ var (
 	flagTCP   = NewPortMapFlag(22, 22)
 
 	flagPublic = flag.Bool("public", false, "Enable public https access")
+
+	// Identity header mapping
+	flagHeaderMap = &HeaderMapFlag{}
+	flagBorder0   = flag.Bool("border0", false, "Map identity headers to the Border0 set (X-Auth-Email, X-Auth-Name, X-Auth-Picture)")
+
+	flagUpstreamTimeout = flag.Duration("upstream-timeout", 30*time.Second, "Max time for the upstream to start responding (0 = no timeout)")
 )
 
 func init() {
@@ -56,6 +62,7 @@ func init() {
 	flag.Var(flagHttps, "https-port", "HTTPS port mapping (in:out or port)")
 	flag.Var(flagDNS, "dns-port", "DNS port mapping (in:out or port)")
 	flag.Var(flagTCP, "tcp-port", "TCP port mapping (in:out or port)")
+	flag.Var(flagHeaderMap, "header-map", "Map identity fields to extra headers, e.g. login=X-Auth-Email,name=X-Auth-Name,pic=X-Auth-Picture")
 
 	flag.StringVar(&flagHostname, "hostname", "tsmultiplug", "hostname on tailnet")
 	flag.StringVar(&flagHostname, "hn", "tsmultiplug", "hostname on tailnet (short)")
@@ -107,6 +114,22 @@ func main() {
 	if !flagHttp.IsSet() && !flagHttps.IsSet() && !flagDNS.IsSet() && !flagTCP.IsSet() {
 		slog.Info("no listeners enabled, using HTTPS by default")
 		flagHttps.Set("")
+	}
+
+	// -border0 is a preset for -header-map; refuse the combination rather
+	// than invent a precedence rule.
+	if *flagBorder0 {
+		if flagHeaderMap.IsSet() {
+			slog.Error("-border0 and -header-map are mutually exclusive")
+			os.Exit(1)
+		}
+		if err := flagHeaderMap.Set("login=X-Auth-Email,name=X-Auth-Name,pic=X-Auth-Picture"); err != nil {
+			slog.Error("failed to apply -border0 preset", "error", err)
+			os.Exit(1)
+		}
+	}
+	if *flagPublic && flagHeaderMap.IsSet() {
+		slog.Warn("-public with mapped identity headers: public visitors arrive with blank identity headers; ensure the upstream app has a fallback auth tier")
 	}
 
 	// cmdExitChannel receives the error when cmd.Wait() return
@@ -459,7 +482,7 @@ func createReverseProxy(port int) *httputil.ReverseProxy {
 		DialContext: (&net.Dialer{
 			Timeout: 2 * time.Second,
 		}).DialContext,
-		ResponseHeaderTimeout: time.Second,
+		ResponseHeaderTimeout: *flagUpstreamTimeout,
 	}
 
 	return proxy
@@ -488,6 +511,18 @@ func createWhoisHandler(lc *local.Client, proxy *httputil.ReverseProxy) http.Han
 		r.Header.Set("Tailscale-User-Login", ul)
 		r.Header.Set("Tailscale-User-Name", dn)
 		r.Header.Set("Tailscale-User-Profile-Pic", pp)
+
+		// mapped headers get the same overwrite-always treatment so
+		// client-supplied values never reach the upstream.
+		if h := flagHeaderMap.Login; h != "" {
+			r.Header.Set(h, ul)
+		}
+		if h := flagHeaderMap.Name; h != "" {
+			r.Header.Set(h, dn)
+		}
+		if h := flagHeaderMap.Pic; h != "" {
+			r.Header.Set(h, pp)
+		}
 
 		proxy.ServeHTTP(w, r)
 	}
@@ -530,6 +565,78 @@ func attachLogging(cmd *exec.Cmd) error {
 	}()
 
 	return nil
+}
+
+// HeaderMapFlag maps whois identity fields (login, name, pic) to extra
+// header names injected into proxied requests. Mapped headers are
+// overwritten on every request — blank when identity is unknown — so
+// client-supplied values can never reach the upstream.
+type HeaderMapFlag struct {
+	Login string
+	Name  string
+	Pic   string
+}
+
+func (h *HeaderMapFlag) String() string {
+	var parts []string
+	if h.Login != "" {
+		parts = append(parts, "login="+h.Login)
+	}
+	if h.Name != "" {
+		parts = append(parts, "name="+h.Name)
+	}
+	if h.Pic != "" {
+		parts = append(parts, "pic="+h.Pic)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (h *HeaderMapFlag) IsSet() bool {
+	return h.Login != "" || h.Name != "" || h.Pic != ""
+}
+
+func (h *HeaderMapFlag) Set(value string) error {
+	for _, pair := range strings.Split(value, ",") {
+		field, header, ok := strings.Cut(pair, "=")
+		if !ok || header == "" {
+			return fmt.Errorf("invalid header mapping %q, want field=Header-Name", pair)
+		}
+		if !isValidHeaderName(header) {
+			return fmt.Errorf("invalid header name %q", header)
+		}
+		var dst *string
+		switch field {
+		case "login":
+			dst = &h.Login
+		case "name":
+			dst = &h.Name
+		case "pic":
+			dst = &h.Pic
+		default:
+			return fmt.Errorf("unknown identity field %q, want login, name or pic", field)
+		}
+		if *dst != "" {
+			return fmt.Errorf("duplicate mapping for %q", field)
+		}
+		*dst = header
+	}
+	return nil
+}
+
+// isValidHeaderName reports whether s is a valid RFC 7230 header field name.
+func isValidHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", c):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type PortMapFlag struct {
