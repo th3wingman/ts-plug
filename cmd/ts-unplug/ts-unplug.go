@@ -22,6 +22,7 @@ var (
 	flagHostname    = flag.String("hostname", "tsunplug", "hostname for the tsnet server")
 	flagDebugTSNet  = flag.Bool("debug-tsnet", false, "enable tsnet.Server logging")
 	flagPort        = flag.Int("port", 80, "local port to listen on")
+	flagSocket      = flag.String("socket", "", "local unix socket path to listen on instead of -port")
 	flagMode        = flag.String("mode", "http", "proxy mode: http (L7 HTTP reverse proxy) or tcp (raw passthrough)")
 	flagTLS         = flag.Bool("tls", false, "upstream speaks HTTPS (http mode only)")
 	flagTLSInsecure = flag.Bool("tls-insecure", false, "skip upstream TLS certificate verification (http mode only)")
@@ -77,13 +78,12 @@ func main() {
 
 	slog.Info("tsnet server started", slog.String("status", st.BackendState))
 
-	listenAddr := fmt.Sprintf("localhost:%d", *flagPort)
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := listen()
 	if err != nil {
-		slog.Error("failed to listen", slog.String("addr", listenAddr), slog.Any("error", err))
+		slog.Error("failed to listen", slog.Any("error", err))
 		os.Exit(1)
 	}
-	defer listener.Close()
+	defer listener.Close() // for unix sockets this also unlinks the path
 
 	switch *flagMode {
 	case "http":
@@ -94,6 +94,45 @@ func main() {
 		slog.Error("unknown mode", slog.String("mode", *flagMode))
 		os.Exit(1)
 	}
+}
+
+// listen binds the local side: localhost TCP by default, or a unix socket
+// when -socket is given.
+func listen() (net.Listener, error) {
+	if *flagSocket == "" {
+		return net.Listen("tcp", fmt.Sprintf("localhost:%d", *flagPort))
+	}
+
+	portGiven := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "port" {
+			portGiven = true
+		}
+	})
+	if portGiven {
+		return nil, fmt.Errorf("-socket and -port are mutually exclusive")
+	}
+
+	// Remove a stale socket from a previous run; refuse to clobber
+	// anything that is not a socket.
+	if fi, err := os.Stat(*flagSocket); err == nil {
+		if fi.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("refusing to replace non-socket file %s", *flagSocket)
+		}
+		if err := os.Remove(*flagSocket); err != nil {
+			return nil, fmt.Errorf("removing stale socket: %w", err)
+		}
+	}
+
+	l, err := net.Listen("unix", *flagSocket)
+	if err != nil {
+		return nil, err
+	}
+	// Same trust model as listening on localhost TCP: any local user.
+	if err := os.Chmod(*flagSocket, 0o666); err != nil {
+		slog.Warn("could not chmod socket", slog.String("path", *flagSocket), slog.Any("error", err))
+	}
+	return l, nil
 }
 
 func serveHTTP(ctx context.Context, ts *tsnet.Server, listener net.Listener, remoteAddr string) {

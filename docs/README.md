@@ -2,6 +2,10 @@
 
 Complete documentation for ts-plug and ts-unplug.
 
+**New here? Start with the [Quick Start Guide](./quickstart.md)** — copy-paste
+recipes for exposing ssh, https apps, remote docker sockets, and running any of
+the tools as systemd services.
+
 ## Core Guides
 
 ### [ts-plug Guide](./ts-plug.md)

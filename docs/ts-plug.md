@@ -150,6 +150,16 @@ Raw TCP forwarding for protocols that aren't HTTP — SSH, databases, custom bin
   ts-plug -tcp-port 5432 -hostname db -- sleep infinity
   ```
 
+- Unix socket upstreams — the `out` side of any tcp/http/https mapping can be `unix:<absolute path>` instead of a port:
+  ```sh
+  # Tailnet :22 -> sshd's AF_UNIX socket (systemd 256+, no TCP sshd needed)
+  ts-plug -tcp-port 22:unix:/run/ssh-unix-local/socket -hostname xps13-ssh -- sleep infinity
+
+  # Tailnet :2375 -> local docker daemon socket
+  ts-plug -tcp-port 2375:unix:/var/run/docker.sock -hostname dockerbox -- sleep infinity
+  ```
+  Not supported for `-dns-port` (UDP vs stream socket).
+
 #### DNS
 
 - `-dns` - Enable DNS listener (default port mapping: 53:53)
@@ -306,6 +316,22 @@ Flags: `--proto tcp|http|https|dns` (default `tcp`, default port 22), `--port N`
 Multiple instances coexist (`ts-plug@ssh`, `ts-plug@grafana`, ...), each with its own tailnet identity. Once a node has joined, `TS_AUTHKEY` can be removed from the env file — identity persists in the state dir. Remove with `--uninstall` (keeps node keys) or `--uninstall --purge`.
 
 The hostname defaults to `--name`; systemd specifiers like `%H` do **not** expand inside env files, so pass `--hostname` explicitly if it should differ.
+
+#### Tailnet-only SSH, zero open TCP ports
+
+With systemd ≥ 256 and openssh-server installed, `systemd-ssh-generator` provides sshd on a unix socket (`sshd-unix-local.socket` → `/run/ssh-unix-local/socket`). Point ts-plug at that socket and disable TCP sshd entirely — ssh is then reachable *only* through your tailnet:
+
+```sh
+sudo apt install openssh-server
+sudo systemctl disable --now ssh.service ssh.socket    # kill TCP sshd
+systemctl status sshd-unix-local.socket                # the unix one stays
+
+sudo scripts/install-systemd.sh ts-plug --name xps13-ssh \
+  --src-port 22 --dst-socket /run/ssh-unix-local/socket
+# from any tailnet device: ssh user@xps13-ssh.<tailnet>.ts.net
+```
+
+Nothing listens on LAN :22; the only way in is tailnet membership. If the socket on your distro isn't world-connectable, add `--group` with its owning group.
 
 ### Headless Deployment (Raspberry Pi, etc.)
 
