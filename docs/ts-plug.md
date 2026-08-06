@@ -274,7 +274,16 @@ ts-plug -public -hostname webhook-test -- python webhook_server.py
 
 ### Running as a systemd Service
 
-[`scripts/install-systemd.sh`](../scripts/install-systemd.sh) installs any ts-plug instance as a systemd service in one line. It builds the binary if needed, writes a shared `ts-plug@.service` template unit, and prompts for the auth key if you don't pass one:
+[`scripts/install-systemd.sh`](../scripts/install-systemd.sh) installs any ts-plug instance as a systemd service in one line. It finds a binary (in order: `--binary`, local `build/`, build from source, already-installed, download from [GitHub releases](https://github.com/th3wingman/ts-plug/releases) with sha256 verification), writes a shared `ts-plug@.service` template unit, and prompts for the auth key if you don't pass one.
+
+No clone needed — run it straight from the repo URL (piped stdin disables the key prompt, so pass `--authkey` or `TS_AUTHKEY`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/th3wingman/ts-plug/main/scripts/install-systemd.sh \
+  | sudo bash -s -- ts-plug --name pi4-ssh --port 22 --authkey tskey-auth-...
+```
+
+Downloads support `--version vX.Y.Z` to pin a release and `--arch amd64|arm64|armv7` to override detection (e.g. 64-bit kernel with 32-bit userland on a Pi). From a clone:
 
 ```sh
 # Expose local sshd at my-laptop-ssh.<tailnet>.ts.net:22

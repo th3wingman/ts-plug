@@ -1,0 +1,74 @@
+name: release binaries
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build a release for (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build() {  # build <tool> <cmd-dir> <goos> <goarch> <suffix> [GOARM]
+            local tool=$1 cmd=$2 goos=$3 goarch=$4 suffix=$5 goarm=${6:-}
+            echo "building $tool-$suffix"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch GOARM=$goarm \
+              go build -trimpath -ldflags '-s -w' -o "dist/$tool-$suffix" "./$cmd"
+          }
+          for spec in "ts-plug:cmd/ts-multi-plug" "ts-unplug:cmd/ts-unplug" "ts-router:cmd/ts-router"; do
+            tool=${spec%%:*} cmd=${spec#*:}
+            build "$tool" "$cmd" linux  amd64 linux-amd64
+            build "$tool" "$cmd" linux  arm64 linux-arm64
+            build "$tool" "$cmd" linux  arm   linux-armv7 7
+            build "$tool" "$cmd" darwin arm64 darwin-arm64
+          done
+          cp scripts/install-systemd.sh dist/
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          ls -l dist
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG exists; replacing assets"
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/* --generate-notes --repo "$GITHUB_REPOSITORY"
+          fi
+
+      - name: Prune old releases (keep newest 3)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Releases only — git tags are kept, so history stays intact.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+              --json tagName --jq '.[3:][].tagName' |
+          while read -r old; do
+            echo "deleting release $old"
+            gh release delete "$old" --yes --repo "$GITHUB_REPOSITORY"
+          done

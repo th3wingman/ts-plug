@@ -42,7 +42,15 @@ $EDITOR ~/.config/ts-router/skynet/routes.json
 
 ## Run as a Service
 
-One-liner systemd install for any of the tools — builds if needed, prompts for the auth key, sets up an isolated instance under `/var/lib/<tool>/<name>`:
+One-liner systemd install for any of the tools — sets up an isolated instance under `/var/lib/<tool>/<name>`. No clone, no Go toolchain: the script pulls a checksum-verified binary from [GitHub releases](https://github.com/th3wingman/ts-plug/releases):
+
+```sh
+# Expose local sshd at my-host-ssh.<tailnet>.ts.net:22 — works on amd64, arm64, Pi (armv7)
+curl -fsSL https://raw.githubusercontent.com/th3wingman/ts-plug/main/scripts/install-systemd.sh \
+  | sudo bash -s -- ts-plug --name my-host-ssh --port 22 --authkey tskey-auth-...
+```
+
+From a clone the same script builds locally instead (and prompts for the auth key, so it never touches your shell history):
 
 ```sh
 # Expose local sshd at my-laptop-ssh.<tailnet>.ts.net:22
