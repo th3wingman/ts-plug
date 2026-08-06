@@ -186,26 +186,17 @@ ts-unplug -dir ./state -port 3000 api.tailnet.ts.net:8080
 
 ### Long-Running Proxy
 
-Run as a background service:
+Run as a systemd service via [`scripts/install-systemd.sh`](../scripts/install-systemd.sh):
+
 ```sh
-# Using systemd (example)
-cat > /etc/systemd/system/ts-unplug-api.service <<EOF
-[Unit]
-Description=ts-unplug proxy for API
-After=network.target
+# 127.0.0.1:8080 -> api.tailnet.ts.net (http mode)
+sudo scripts/install-systemd.sh ts-unplug --name api --port 8080 api.tailnet.ts.net
 
-[Service]
-Type=simple
-User=youruser
-ExecStart=/usr/local/bin/ts-unplug -dir /var/lib/tsunplug -port 8080 api.tailnet.ts.net
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl enable --now ts-unplug-api
+# 127.0.0.1:5432 -> postgres over raw tcp
+sudo scripts/install-systemd.sh ts-unplug --name db --port 5432 --mode tcp db.tailnet.ts.net:5432
 ```
+
+Each instance becomes `ts-unplug@<name>` with its env file in `/etc/ts-unplug/<name>.env` and tsnet state (node keys) in `/var/lib/ts-unplug/<name>/`. Remove with `--uninstall` (add `--purge` to also delete the node identity). To bind local ports below 1024, uncomment `AmbientCapabilities=CAP_NET_BIND_SERVICE` in `/etc/systemd/system/ts-unplug@.service`.
 
 ### Docker Container
 

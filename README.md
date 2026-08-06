@@ -40,6 +40,26 @@ $EDITOR ~/.config/ts-router/skynet/routes.json
 # Browse https://ai.skynet.ts.net/, https://app.skynet.ts.net/, etc.
 ```
 
+## Run as a Service
+
+One-liner systemd install for any of the tools — builds if needed, prompts for the auth key, sets up an isolated instance under `/var/lib/<tool>/<name>`:
+
+```sh
+# Expose local sshd at my-laptop-ssh.<tailnet>.ts.net:22
+sudo scripts/install-systemd.sh ts-plug --name my-laptop-ssh --port 22
+
+# Expose local Grafana at https://grafana.<tailnet>.ts.net
+sudo scripts/install-systemd.sh ts-plug --name grafana --proto https --dst-port 3000
+
+# Bring tailnet postgres to 127.0.0.1:5432
+sudo scripts/install-systemd.sh ts-unplug --name db --port 5432 --mode tcp db.tailnet.ts.net:5432
+
+# Remote install (Raspberry Pi etc.): cross-compile, ship, install over SSH
+make deploy HOST=pi.local TS_AUTHKEY=tskey-auth-...
+```
+
+Instances stack: `ts-plug@ssh`, `ts-plug@grafana`, ... each with its own tailnet identity. `--uninstall` removes one, `--help` shows everything else.
+
 ## Key Features
 
 **ts-plug** automatically:

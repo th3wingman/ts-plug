@@ -71,39 +71,49 @@ pi-ts-unplug:
 pi-ts-router:
 	GOOS=linux GOARCH=arm64 go build -o build/ts-router-linux-arm64 ./cmd/ts-router
 
-# Deploy ts-plug to a remote arm64 host (Raspberry Pi etc.) over SSH:
-# build the arm64 binary, ship it plus the systemd unit to /opt/ts-plug,
-# and (re)start the service.
+# Install a tool as a systemd service on THIS machine via
+# scripts/install-systemd.sh (builds the binary first if needed).
 #
-# The TS_AUTHKEY env file is handled one of three ways:
-#   TS_AUTHKEY=tskey-...  the script writes /opt/ts-plug/tsplug.env for you
-#   ENV_FILE=path         the script copies your local env file to the host
-#   (neither)             assumes /opt/ts-plug/tsplug.env already exists
+#   make install-service NAME=my-laptop-ssh FLAGS='--port 22'
+#   make install-service TOOL=ts-unplug NAME=db FLAGS='--port 5432 --mode tcp db.tailnet.ts.net:5432'
+#
+# See `scripts/install-systemd.sh --help` for all flags.
+TOOL ?= ts-plug
+install-service:
+	@test -n "$(NAME)" || { echo "usage: make install-service NAME=<instance> [TOOL=ts-plug] [FLAGS='--port 22']"; exit 1; }
+	sudo scripts/install-systemd.sh $(TOOL) --name $(NAME) $(FLAGS)
+
+# Deploy ts-plug to a remote arm64 host (Raspberry Pi etc.) over SSH:
+# build the arm64 binary, ship it plus scripts/install-systemd.sh, and run
+# the installer there. Instance name = the remote hostname; default service
+# is raw TCP forwarding of :22 (override with PLUG_FLAGS).
+#
+# The TS_AUTHKEY is handled one of three ways:
+#   TS_AUTHKEY=tskey-...  passed to the installer via the remote environment
+#   ENV_FILE=path         your local env file is copied and read on the host
+#   (neither)             assumes the node already has state on the host
 # ENV_FILE is the safer option — TS_AUTHKEY on the command line is visible
 # in `ps` and shell history.
 #
 #   make deploy HOST=192.168.0.21 TS_AUTHKEY=tskey-auth-xxxx
-#   make deploy HOST=pi.local SSH_USER=pi ENV_FILE=./secrets/tsplug.env
-#   make deploy HOST=192.168.0.21          # env already on the host
+#   make deploy HOST=pi.local ENV_FILE=./secrets/tsplug.env PLUG_FLAGS='--port 22'
+#   make deploy HOST=192.168.0.21          # node already joined
 SSH_USER ?= root
+PLUG_FLAGS ?= --port 22
 deploy: pi-ts-plug
-	@test -n "$(HOST)" || { echo "usage: make deploy HOST=<ip-or-host> [SSH_USER=root] [TS_AUTHKEY=tskey-... | ENV_FILE=path]"; exit 1; }
-	ssh $(SSH_USER)@$(HOST) 'install -d -m 0755 /opt/ts-plug'
+	@test -n "$(HOST)" || { echo "usage: make deploy HOST=<ip-or-host> [SSH_USER=root] [TS_AUTHKEY=tskey-... | ENV_FILE=path] [PLUG_FLAGS='--port 22']"; exit 1; }
+	scp build/ts-plug-linux-arm64 $(SSH_USER)@$(HOST):/tmp/ts-plug.bin
+	scp scripts/install-systemd.sh $(SSH_USER)@$(HOST):/tmp/ts-plug-install.sh
 	@if [ -n "$(ENV_FILE)" ]; then \
 	  echo "copying env file $(ENV_FILE)"; \
-	  scp "$(ENV_FILE)" $(SSH_USER)@$(HOST):/opt/ts-plug/tsplug.env; \
-	elif [ -n "$(TS_AUTHKEY)" ]; then \
-	  echo "writing tsplug.env from TS_AUTHKEY"; \
-	  ssh $(SSH_USER)@$(HOST) 'umask 077; printf "TS_AUTHKEY=%s\n" "$(TS_AUTHKEY)" > /opt/ts-plug/tsplug.env'; \
+	  scp "$(ENV_FILE)" $(SSH_USER)@$(HOST):/tmp/tsplug.env; \
 	fi
-	scp build/ts-plug-linux-arm64 $(SSH_USER)@$(HOST):/opt/ts-plug/ts-plug.new
-	scp docs/examples/ts-plug.service $(SSH_USER)@$(HOST):/etc/systemd/system/ts-plug.service
-	ssh $(SSH_USER)@$(HOST) 'set -e; \
-	  mv /opt/ts-plug/ts-plug.new /opt/ts-plug/ts-plug; chmod 0755 /opt/ts-plug/ts-plug; \
-	  [ -f /opt/ts-plug/tsplug.env ] && chmod 0600 /opt/ts-plug/tsplug.env \
-	    || echo "WARNING: /opt/ts-plug/tsplug.env missing; pass TS_AUTHKEY=... or ENV_FILE=..."; \
-	  systemctl daemon-reload; systemctl enable ts-plug.service; systemctl restart ts-plug.service; \
-	  sleep 2; systemctl --no-pager status ts-plug.service | head -n 8'
+	ssh $(SSH_USER)@$(HOST) 'set -e; chmod +x /tmp/ts-plug-install.sh; \
+	  systemctl disable --now ts-plug.service 2>/dev/null && echo "disabled legacy ts-plug.service" || true; \
+	  TS_AUTHKEY="$(TS_AUTHKEY)" /tmp/ts-plug-install.sh ts-plug \
+	    --name "$$(hostname -s)" --binary /tmp/ts-plug.bin \
+	    $(if $(ENV_FILE),--env-file /tmp/tsplug.env) $(PLUG_FLAGS) < /dev/null; \
+	  rm -f /tmp/ts-plug.bin /tmp/tsplug.env /tmp/ts-plug-install.sh'
 
 install: binaries
 	cp build/ts-plug $(GOPATH)/bin/ts-plug
@@ -132,4 +142,4 @@ test: examples
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router ts-multinet docker-ts-multinet darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router linux linux-ts-plug linux-ts-unplug linux-ts-router pi pi-ts-plug pi-ts-unplug pi-ts-router deploy install install-ts-router
+.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router ts-multinet docker-ts-multinet darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router linux linux-ts-plug linux-ts-unplug linux-ts-router pi pi-ts-plug pi-ts-unplug pi-ts-router deploy install install-ts-router install-service
