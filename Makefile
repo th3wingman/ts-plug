@@ -15,7 +15,7 @@ BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 all: examples binaries
 
-binaries: ts-plug ts-unplug ts-router
+binaries: ts-plug ts-unplug ts-router ts-unplug-proxy
 
 ts-plug:
 	go build -o build/ts-plug ./cmd/ts-multi-plug
@@ -26,6 +26,9 @@ ts-unplug:
 ts-router:
 	go build -o build/ts-router ./cmd/ts-router
 
+ts-unplug-proxy:
+	go build -o build/ts-unplug-proxy ./cmd/ts-unplug-proxy
+
 # ts-multinet is Linux-only (raw TUN + gVisor) and experimental; not in `all`.
 ts-multinet:
 	go build -o build/ts-multinet ./cmd/ts-multinet
@@ -33,7 +36,7 @@ ts-multinet:
 docker-ts-multinet:
 	docker build -f cmd/ts-multinet/Dockerfile -t ts-multinet .
 
-darwin: darwin-ts-plug darwin-ts-unplug darwin-ts-router
+darwin: darwin-ts-plug darwin-ts-unplug darwin-ts-router darwin-ts-unplug-proxy
 
 darwin-ts-plug:
 	GOOS=darwin GOARCH=arm64 go build -o build/ts-plug-darwin-arm64 ./cmd/ts-multi-plug
@@ -44,7 +47,10 @@ darwin-ts-unplug:
 darwin-ts-router:
 	GOOS=darwin GOARCH=arm64 go build -o build/ts-router-darwin-arm64 ./cmd/ts-router
 
-linux: linux-ts-plug linux-ts-unplug linux-ts-router
+darwin-ts-unplug-proxy:
+	GOOS=darwin GOARCH=arm64 go build -o build/ts-unplug-proxy-darwin-arm64 ./cmd/ts-unplug-proxy
+
+linux: linux-ts-plug linux-ts-unplug linux-ts-router linux-ts-unplug-proxy
 
 linux-ts-plug:
 	GOOS=linux GOARCH=arm64 go build -o build/ts-plug-linux-arm64 ./cmd/ts-multi-plug
@@ -57,6 +63,10 @@ linux-ts-unplug:
 linux-ts-router:
 	GOOS=linux GOARCH=arm64 go build -o build/ts-router-linux-arm64 ./cmd/ts-router
 	GOOS=linux GOARCH=amd64 go build -o build/ts-router-linux-amd64 ./cmd/ts-router
+
+linux-ts-unplug-proxy:
+	GOOS=linux GOARCH=arm64 go build -o build/ts-unplug-proxy-linux-arm64 ./cmd/ts-unplug-proxy
+	GOOS=linux GOARCH=amd64 go build -o build/ts-unplug-proxy-linux-amd64 ./cmd/ts-unplug-proxy
 
 # Raspberry Pi 4 (64-bit Raspberry Pi OS / Ubuntu) — arm64.
 # Use `pi` for the full set, or `pi-ts-plug` for just the plug binary.
@@ -119,6 +129,7 @@ install: binaries
 	cp build/ts-plug $(GOPATH)/bin/ts-plug
 	cp build/ts-unplug $(GOPATH)/bin/ts-unplug
 	cp build/ts-router $(GOPATH)/bin/ts-router
+	cp build/ts-unplug-proxy $(GOPATH)/bin/ts-unplug-proxy
 
 # Install ts-router system-wide and grant cap_net_bind_service so it can
 # bind :80/:443 without running as root. Override PREFIX or BINDIR to
@@ -142,4 +153,4 @@ test: examples
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router ts-multinet docker-ts-multinet darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router linux linux-ts-plug linux-ts-unplug linux-ts-router pi pi-ts-plug pi-ts-unplug pi-ts-router deploy install install-ts-router install-service
+.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router ts-unplug-proxy ts-multinet docker-ts-multinet darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router darwin-ts-unplug-proxy linux linux-ts-plug linux-ts-unplug linux-ts-router linux-ts-unplug-proxy pi pi-ts-plug pi-ts-unplug pi-ts-router deploy install install-ts-router install-service
