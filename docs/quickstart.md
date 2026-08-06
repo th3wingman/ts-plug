@@ -89,6 +89,40 @@ docker ps
 > **every device on your tailnet**. Restrict access with
 > [Tailscale ACLs](https://tailscale.com/kb/1018/acls). Never use `-public` here.
 
+## Whole tailnet through one proxy
+
+For proxy-aware tools, ts-unplug-proxy reaches *any* tailnet host without
+per-service mappings. Run it ad hoc (experimental — deliberately not a
+service recipe; a local proxy is whole-tailnet egress for any local process):
+
+```sh
+curl -fsSL -o ts-unplug-proxy https://github.com/th3wingman/ts-plug/releases/latest/download/ts-unplug-proxy-linux-amd64
+chmod +x ts-unplug-proxy
+TS_AUTHKEY=tskey-auth-... ./ts-unplug-proxy -dir ./proxy-state -socks5 localhost:1080
+
+curl --socks5-hostname localhost:1080 http://anything.<your-tailnet>.ts.net
+```
+
+Details: [ts-unplug-proxy guide](./ts-unplug-proxy.md).
+
+## Many tailnet hosts under real URLs
+
+ts-router serves `https://nas.skynet.ts.net/`, `https://ai.skynet.ts.net/`,
+etc. from one local process — write a `routes.json`
+([example](../cmd/ts-router/routes.example.json)), then:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/th3wingman/ts-plug/main/scripts/install-systemd.sh \
+  | sudo bash -s -- ts-router --name skynet --config ./routes.json \
+      --hostname tsrouter-skynet-$(hostname -s) --authkey tskey-auth-...
+
+# if using DNS routes, wire up systemd-resolved (explicit, one-time):
+sudo /usr/local/bin/ts-router -config /etc/ts-router/skynet/routes.json install-resolved
+sudo systemctl restart systemd-resolved
+```
+
+Full config reference: [ts-router guide](./ts-router.md).
+
 ## Day-2 operations
 
 ```sh
