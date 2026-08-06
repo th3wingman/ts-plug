@@ -19,11 +19,11 @@ jobs:
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -37,7 +37,7 @@ jobs:
             CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch GOARM=$goarm \
               go build -trimpath -ldflags '-s -w' -o "dist/$tool-$suffix" "./$cmd"
           }
-          for spec in "ts-plug:cmd/ts-multi-plug" "ts-unplug:cmd/ts-unplug" "ts-router:cmd/ts-router"; do
+          for spec in "ts-plug:cmd/ts-multi-plug" "ts-unplug:cmd/ts-unplug" "ts-router:cmd/ts-router" "ts-unplug-proxy:cmd/ts-unplug-proxy"; do
             tool=${spec%%:*} cmd=${spec#*:}
             build "$tool" "$cmd" linux  amd64 linux-amd64
             build "$tool" "$cmd" linux  arm64 linux-arm64
