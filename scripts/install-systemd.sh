@@ -30,12 +30,22 @@
 # Auth key resolution order: --authkey, --env-file, $TS_AUTHKEY, existing
 # /etc/<tool>/NAME.env, interactive prompt. After the first successful join
 # the node identity lives in /var/lib/<tool>/NAME and the key may be removed.
+#
+# Works standalone via curl too — no clone, no Go toolchain. The binary is
+# then downloaded from GitHub releases and checksum-verified:
+#
+#   curl -fsSL https://raw.githubusercontent.com/th3wingman/ts-plug/main/scripts/install-systemd.sh \
+#     | sudo bash -s -- ts-plug --name my-host-ssh --port 22 --authkey tskey-auth-...
+#
+# (Piped stdin means no interactive key prompt — pass --authkey or TS_AUTHKEY.
+#  Download the script first if you prefer the hidden prompt.)
 
 set -euo pipefail
 
 BINDIR=/usr/local/bin
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd || true)"
+GH_REPO="${TS_PLUG_REPO:-th3wingman/ts-plug}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+REPO_ROOT="${SCRIPT_DIR:+$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd || true)}"
 
 usage() {
     cat <<'EOF'
@@ -47,6 +57,9 @@ common options:
   --authkey KEY      tailscale auth key (tskey-auth-...)
   --env-file PATH    read TS_AUTHKEY from an existing env file
   --binary PATH      install this binary instead of building/looking one up
+  --version VER      download this release (e.g. v0.1.0) from GitHub instead
+                     of building; default when nothing local is found: latest
+  --arch A           override arch for downloads: amd64 | arm64 | armv7
   --args 'RAW'       raw tool arguments; escape hatch, replaces generated args
   --uninstall        stop, disable and remove the instance
   --purge            with --uninstall: also delete state (node keys!) and config
@@ -82,6 +95,7 @@ TOOL=$1; shift
 case "$TOOL" in ts-plug|ts-unplug|ts-router) ;; *) usage ;; esac
 
 NAME='' HOSTNAME_OVERRIDE='' ENV_FILE='' BINARY='' RAW_ARGS=''
+VERSION='' ARCH=''
 AUTHKEY="${TS_AUTHKEY:-}"
 PROTO=tcp PORT='' SRC_PORT='' DST_PORT='' RUN_CMD='' PUBLIC=0
 MODE='' REMOTE='' ROUTER_CONFIG=''
@@ -94,6 +108,8 @@ while [ $# -gt 0 ]; do
         --authkey)   AUTHKEY=$2; shift 2 ;;
         --env-file)  ENV_FILE=$2; shift 2 ;;
         --binary)    BINARY=$2; shift 2 ;;
+        --version)   VERSION=$2; shift 2 ;;
+        --arch)      ARCH=$2; shift 2 ;;
         --args)      RAW_ARGS=$2; shift 2 ;;
         --proto)     PROTO=$2; shift 2 ;;
         --port)      PORT=$2; shift 2 ;;
@@ -208,23 +224,72 @@ esac
 
 # ------------------------------------------------------------- binary lookup
 
+detect_arch() {
+    if [ -n "$ARCH" ]; then echo "$ARCH"; return; fi
+    case "$(uname -m)" in
+        x86_64)  echo amd64 ;;
+        aarch64) echo arm64 ;;
+        armv7l)  echo armv7 ;;
+        *) die "unsupported architecture '$(uname -m)': pass --arch amd64|arm64|armv7 or --binary" ;;
+    esac
+}
+
+fetch() {  # fetch URL DEST
+    if command -v curl >/dev/null; then
+        curl -fsSL -o "$2" "$1"
+    elif command -v wget >/dev/null; then
+        wget -qO "$2" "$1"
+    else
+        die "need curl or wget to download release binaries"
+    fi
+}
+
+download_binary() {
+    local arch asset base
+    [ "$(uname -s)" = Linux ] || die "release download is Linux-only (this is a systemd installer)"
+    arch=$(detect_arch)
+    asset="$TOOL-linux-$arch"
+    if [ -z "$VERSION" ] || [ "$VERSION" = latest ]; then
+        base="https://github.com/$GH_REPO/releases/latest/download"
+    else
+        base="https://github.com/$GH_REPO/releases/download/$VERSION"
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY-RUN: download + sha256-verify $base/$asset" >&2
+        echo "/tmp/dry-run/$asset"; return
+    fi
+    local tmp
+    tmp=$(mktemp -d /tmp/ts-plug-install.XXXXXX)
+    log "downloading $base/$asset" >&2
+    fetch "$base/$asset" "$tmp/$asset" || die "download failed: $base/$asset (does the release exist?)"
+    fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
+    (cd "$tmp" && grep "  $asset\$" SHA256SUMS | sha256sum -c --quiet -) >&2 \
+        || die "checksum verification failed for $asset"
+    chmod +x "$tmp/$asset"
+    echo "$tmp/$asset"
+}
+
 resolve_binary() {
     if [ -n "$BINARY" ]; then
+        [ -n "$VERSION" ] && die "--binary and --version are mutually exclusive"
         [ -x "$BINARY" ] || die "--binary $BINARY is not executable"
         echo "$BINARY"; return
+    fi
+    if [ -n "$VERSION" ]; then    # explicit pin always downloads
+        download_binary; return
     fi
     if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/build/$TOOL" ]; then
         echo "$REPO_ROOT/build/$TOOL"; return
     fi
-    if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/Makefile" ] && command -v go >/dev/null; then
+    if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/Makefile" ] && [ -d "$REPO_ROOT/cmd" ] && command -v go >/dev/null; then
         log "building $TOOL from source" >&2
         make -C "$REPO_ROOT" "$TOOL" >&2
         echo "$REPO_ROOT/build/$TOOL"; return
     fi
     if [ -x "$BINDIR/$TOOL" ]; then
-        echo "";  return   # already installed, nothing to copy
+        echo ""; return   # already installed, nothing to copy
     fi
-    die "no $TOOL binary found: pass --binary, or run from the repo with go installed"
+    download_binary       # last resort: latest release
 }
 
 SRC_BINARY=$(resolve_binary)
@@ -338,6 +403,10 @@ fi
 if [ -n "$SRC_BINARY" ]; then
     log "installing $SRC_BINARY -> $BINDIR/$TOOL"
     run install -m 0755 "$SRC_BINARY" "$BINDIR/$TOOL"
+    # Downloaded binaries live in a throwaway dir; clean it up after install.
+    case "$SRC_BINARY" in
+        /tmp/ts-plug-install.*) [ "$DRY_RUN" -eq 0 ] && rm -rf "$(dirname "$SRC_BINARY")" ;;
+    esac
 fi
 
 log "writing $UNIT_FILE"
