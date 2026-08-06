@@ -70,7 +70,7 @@ sudo scripts/install-systemd.sh ts-plug --name xps13-ssh --src-port 22 --dst-soc
 make deploy HOST=pi.local TS_AUTHKEY=tskey-auth-...
 ```
 
-Instances stack: `ts-plug@ssh`, `ts-plug@grafana`, ... each with its own tailnet identity. `--uninstall` removes one, `--help` shows everything else.
+Instances stack: `ts-plug@ssh`, `ts-plug@grafana`, ... each with its own tailnet identity. `--uninstall` removes one, `--help` shows everything else. More recipes in the [Quick Start Guide](./docs/quickstart.md).
 
 ## Key Features
 
@@ -125,6 +125,7 @@ See [docker/](./docker/) for Pi-hole, Open WebUI, and Audiobookshelf examples.
 
 ## Documentation
 
+- **[Quick Start Guide](./docs/quickstart.md)** - Copy-paste recipes: ssh, https apps, remote docker socket, day-2 ops
 - **[Complete Documentation](./docs/)** - Guides, use cases, and detailed examples
 - **[ts-plug Guide](./docs/ts-plug.md)** - Full ts-plug documentation
 - **[ts-unplug Guide](./docs/ts-unplug.md)** - Full ts-unplug documentation
