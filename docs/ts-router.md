@@ -261,7 +261,27 @@ Each instance:
 
 The DNS responder for each returns its own `local_ip`, so resolution and listener stay matched.
 
+## Running as a systemd System Service
+
+For an always-on box (server, Pi), [`scripts/install-systemd.sh`](../scripts/install-systemd.sh) sets up a system-wide instance in one line:
+
+```sh
+sudo scripts/install-systemd.sh ts-router --name skynet --config ./routes.json \
+  --hostname tsrouter-skynet-$(hostname -s)
+```
+
+This installs `ts-router@skynet` with the routes config at `/etc/ts-router/skynet/routes.json`, tsnet state in `/var/lib/ts-router/skynet/`, and `CAP_NET_BIND_SERVICE` granted by the unit (no `setcap` needed). The resolved drop-in remains a separate, explicit step:
+
+```sh
+sudo /usr/local/bin/ts-router -config /etc/ts-router/skynet/routes.json install-resolved
+sudo systemctl restart systemd-resolved
+```
+
+Remove with `--uninstall` (add `--purge` to delete state and config).
+
 ## Running as a systemd User Unit
+
+For a desktop/laptop where you prefer no root service, a user unit works too:
 
 `~/.config/systemd/user/ts-router-skynet.service`:
 

@@ -129,6 +129,7 @@ CMD ["npm", "start"]
 | Route through remote proxy | ts-unplug | `ts-unplug -dir ./state -port 8888 proxy.ts.net:3128` |
 | Many tailnet hosts as local URLs | ts-router | `ts-router -instance ~/.config/ts-router/skynet` |
 | Browser-native `https://*.skynet.ts.net/` | ts-router | One process, real upstream certs via SNI |
+| Always-on service (ssh, grafana, ...) | any | `sudo scripts/install-systemd.sh ts-plug --name ssh --port 22` |
 
 ### Common Flags
 
