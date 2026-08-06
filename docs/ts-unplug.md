@@ -198,6 +198,28 @@ sudo scripts/install-systemd.sh ts-unplug --name db --port 5432 --mode tcp db.ta
 
 Each instance becomes `ts-unplug@<name>` with its env file in `/etc/ts-unplug/<name>.env` and tsnet state (node keys) in `/var/lib/ts-unplug/<name>/`. Remove with `--uninstall` (add `--purge` to also delete the node identity). To bind local ports below 1024, uncomment `AmbientCapabilities=CAP_NET_BIND_SERVICE` in `/etc/systemd/system/ts-unplug@.service`.
 
+### Local Unix Socket (`-socket`)
+
+Instead of a local TCP port, ts-unplug can serve on a unix socket (`-socket /path`, mutually exclusive with `-port`; created mode 0666 — the same any-local-user trust model as a `localhost` port). Service-managed sockets get a writable home in `/run/ts-unplug/<name>/` via `RuntimeDirectory`.
+
+**Remote docker socket, mounted locally** — pair with ts-plug on the docker host:
+
+```sh
+# on the docker host: tailnet :2375 -> /var/run/docker.sock
+# (--group docker: the socket is root:docker 0660)
+sudo scripts/install-systemd.sh ts-plug --name dockerbox \
+  --src-port 2375 --dst-socket /var/run/docker.sock --group docker
+
+# on your laptop: local unix socket -> dockerbox:2375
+sudo scripts/install-systemd.sh ts-unplug --name rdocker --mode tcp \
+  --src-socket /run/ts-unplug/rdocker/docker.sock dockerbox:2375
+
+export DOCKER_HOST=unix:///run/ts-unplug/rdocker/docker.sock
+docker ps          # talking to the remote daemon
+```
+
+> **Warning:** the docker socket is root-equivalent on the host. `ts-plug --dst-socket /var/run/docker.sock` hands that power to **every device on your tailnet**. Restrict who can reach `dockerbox:2375` with [Tailscale ACLs](https://tailscale.com/kb/1018/acls), and never combine this with `-public`.
+
 ### Docker Container
 
 Access a service from inside a Docker container:

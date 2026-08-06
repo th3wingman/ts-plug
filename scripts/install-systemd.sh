@@ -61,6 +61,8 @@ common options:
                      of building; default when nothing local is found: latest
   --arch A           override arch for downloads: amd64 | arm64 | armv7
   --args 'RAW'       raw tool arguments; escape hatch, replaces generated args
+  --group G          let the service join a supplementary group (e.g. docker,
+                     to reach group-owned unix sockets); writes a unit drop-in
   --uninstall        stop, disable and remove the instance
   --purge            with --uninstall: also delete state (node keys!) and config
   --dry-run          print what would be done without touching anything
@@ -70,12 +72,16 @@ ts-plug options (expose 127.0.0.1 to the tailnet):
   --port N           listen and target port           (tcp default: 22)
   --src-port N       tailnet-side listen port
   --dst-port N       local destination port
+  --dst-socket PATH  forward to a local unix socket instead of a port
+                     (e.g. /run/ssh-unix-local/socket, /var/run/docker.sock)
   --run 'CMD'        upstream command ts-plug should supervise
                      (default: /bin/sleep infinity — i.e. plain forwarding)
   --public           enable Tailscale Funnel (https only)
 
 ts-unplug options (bring a tailnet service to 127.0.0.1):
-  --port N           local listen port (required)
+  --port N           local listen port
+  --src-socket PATH  listen on a local unix socket instead of a port
+                     (service-managed sockets live in /run/ts-unplug/NAME/)
   --mode M           http | tcp (tool default: http)
   HOST[:PORT]        positional: remote tailnet host
 
@@ -98,6 +104,7 @@ NAME='' HOSTNAME_OVERRIDE='' ENV_FILE='' BINARY='' RAW_ARGS=''
 VERSION='' ARCH=''
 AUTHKEY="${TS_AUTHKEY:-}"
 PROTO=tcp PORT='' SRC_PORT='' DST_PORT='' RUN_CMD='' PUBLIC=0
+DST_SOCKET='' SRC_SOCKET='' GROUP=''
 MODE='' REMOTE='' ROUTER_CONFIG=''
 UNINSTALL=0 PURGE=0 DRY_RUN=0
 
@@ -115,6 +122,9 @@ while [ $# -gt 0 ]; do
         --port)      PORT=$2; shift 2 ;;
         --src-port)  SRC_PORT=$2; shift 2 ;;
         --dst-port)  DST_PORT=$2; shift 2 ;;
+        --dst-socket) DST_SOCKET=$2; shift 2 ;;
+        --src-socket) SRC_SOCKET=$2; shift 2 ;;
+        --group)     GROUP=$2; shift 2 ;;
         --run)       RUN_CMD=$2; shift 2 ;;
         --public)    PUBLIC=1; shift ;;
         --mode)      MODE=$2; shift 2 ;;
@@ -152,6 +162,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     log "stopping and disabling $UNIT"
     run systemctl disable --now "$UNIT" || true
     run rm -f "$ENV_PATH"
+    run rm -rf "/etc/systemd/system/$TOOL@$NAME.service.d"
     if [ "$PURGE" -eq 1 ]; then
         log "purging state (node keys) in $STATE_DIR"
         run rm -rf "$STATE_DIR"
@@ -173,11 +184,17 @@ fi
 
 build_ts_plug_args() {
     if [ -n "$RAW_ARGS" ]; then
-        [ -n "$PORT$SRC_PORT$DST_PORT$RUN_CMD" ] && die "--args is mutually exclusive with --port/--src-port/--dst-port/--run"
+        [ -n "$PORT$SRC_PORT$DST_PORT$DST_SOCKET$RUN_CMD" ] && die "--args is mutually exclusive with --port/--src-port/--dst-port/--dst-socket/--run"
         ARGS=$RAW_ARGS
         return
     fi
     case "$PROTO" in tcp|http|https|dns) ;; *) die "--proto must be tcp, http, https or dns" ;; esac
+    if [ -n "$DST_SOCKET" ]; then
+        [ -n "$DST_PORT" ] && die "--dst-socket and --dst-port are mutually exclusive"
+        [ -n "$PORT" ]     && die "--dst-socket and --port are mutually exclusive (use --src-port)"
+        [ "$PROTO" = dns ] && die "--dst-socket does not work with --proto dns"
+        case "$DST_SOCKET" in /*) ;; *) die "--dst-socket must be an absolute path" ;; esac
+    fi
     if [ -n "$PORT" ]; then
         [ -n "$SRC_PORT$DST_PORT" ] && die "--port is mutually exclusive with --src-port/--dst-port"
         SRC_PORT=$PORT
@@ -190,11 +207,15 @@ build_ts_plug_args() {
         https) SRC_PORT=${SRC_PORT:-443} ;;
         dns)   SRC_PORT=${SRC_PORT:-53}  ;;
     esac
-    DST_PORT=${DST_PORT:-$SRC_PORT}
     if [ "$PUBLIC" -eq 1 ] && [ "$PROTO" != https ]; then
         die "--public (Funnel) requires --proto https"
     fi
-    ARGS="-hostname $HN -$PROTO-port $SRC_PORT:$DST_PORT"
+    if [ -n "$DST_SOCKET" ]; then
+        ARGS="-hostname $HN -$PROTO-port $SRC_PORT:unix:$DST_SOCKET"
+    else
+        DST_PORT=${DST_PORT:-$SRC_PORT}
+        ARGS="-hostname $HN -$PROTO-port $SRC_PORT:$DST_PORT"
+    fi
     [ "$PUBLIC" -eq 1 ] && ARGS="$ARGS -public"
     # ts-plug requires an upstream command; sleep = pure forwarding mode.
     ARGS="$ARGS -- ${RUN_CMD:-/bin/sleep infinity}"
@@ -202,9 +223,15 @@ build_ts_plug_args() {
 
 build_ts_unplug_args() {
     if [ -n "$RAW_ARGS" ]; then ARGS=$RAW_ARGS; return; fi
-    [ -n "$PORT" ]   || die "ts-unplug needs --port (local listen port)"
     [ -n "$REMOTE" ] || die "ts-unplug needs the remote tailnet host as a positional argument"
-    ARGS="-hostname $HN -port $PORT"
+    if [ -n "$SRC_SOCKET" ]; then
+        [ -n "$PORT" ] && die "--src-socket and --port are mutually exclusive"
+        case "$SRC_SOCKET" in /*) ;; *) die "--src-socket must be an absolute path" ;; esac
+        ARGS="-hostname $HN -socket $SRC_SOCKET"
+    else
+        [ -n "$PORT" ] || die "ts-unplug needs --port (local listen port) or --src-socket"
+        ARGS="-hostname $HN -port $PORT"
+    fi
     [ -n "$MODE" ] && ARGS="$ARGS -mode $MODE"
     ARGS="$ARGS $REMOTE"
 }
@@ -354,6 +381,8 @@ Type=simple
 EnvironmentFile=/etc/ts-unplug/%i.env
 DynamicUser=yes
 StateDirectory=ts-unplug/%i
+# Writable home for -socket listeners: /run/ts-unplug/<instance>/
+RuntimeDirectory=ts-unplug/%i
 ExecStart=/usr/local/bin/ts-unplug -dir ${STATE_DIRECTORY} $ARGS
 Restart=on-failure
 RestartSec=5
@@ -393,6 +422,12 @@ env_content() {
     echo "ARGS=$ARGS"
 }
 
+dropin_content() {
+    echo "# Managed by install-systemd.sh (--group $GROUP)"
+    echo "[Service]"
+    echo "SupplementaryGroups=$GROUP"
+}
+
 # --------------------------------------------------------------------- apply
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -420,6 +455,25 @@ if [ "$DRY_RUN" -eq 0 ]; then
     umask 022
 fi
 
+DROPIN_DIR="/etc/systemd/system/$TOOL@$NAME.service.d"
+if [ -n "$GROUP" ]; then
+    if [ "$DRY_RUN" -eq 0 ]; then
+        getent group "$GROUP" >/dev/null || die "group '$GROUP' does not exist"
+    fi
+    log "writing $DROPIN_DIR/group.conf (SupplementaryGroups=$GROUP)"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "---- $DROPIN_DIR/group.conf"; dropin_content
+    else
+        install -d -m 0755 "$DROPIN_DIR"
+        dropin_content > "$DROPIN_DIR/group.conf"
+    fi
+elif [ -f "$DROPIN_DIR/group.conf" ]; then
+    # --group was dropped on a re-install: remove the stale drop-in.
+    log "removing stale $DROPIN_DIR/group.conf"
+    run rm -f "$DROPIN_DIR/group.conf"
+    run rmdir --ignore-fail-on-non-empty "$DROPIN_DIR"
+fi
+
 if [ "$TOOL" = ts-router ] && [ -n "$ROUTER_CONFIG" ]; then
     [ -f "$ROUTER_CONFIG" ] || die "--config $ROUTER_CONFIG not found"
     log "installing routes config -> /etc/ts-router/$NAME/routes.json"
@@ -445,20 +499,26 @@ log "config:                   $ENV_PATH"
 case "$TOOL" in
     ts-plug)
         if [ -z "$RAW_ARGS" ]; then
+            DST_LABEL="127.0.0.1:$DST_PORT"
+            [ -n "$DST_SOCKET" ] && DST_LABEL="unix:$DST_SOCKET"
             case "$PROTO" in
                 tcp)
                     if [ "$SRC_PORT" = 22 ]; then
                         log "reach it: ssh <user>@$HN.<your-tailnet>.ts.net"
                     else
-                        log "reach it: $HN.<your-tailnet>.ts.net:$SRC_PORT (raw tcp -> 127.0.0.1:$DST_PORT)"
+                        log "reach it: $HN.<your-tailnet>.ts.net:$SRC_PORT (raw tcp -> $DST_LABEL)"
                     fi ;;
-                https) log "reach it: https://$HN.<your-tailnet>.ts.net/ -> 127.0.0.1:$DST_PORT" ;;
-                http)  log "reach it: http://$HN.<your-tailnet>.ts.net/ -> 127.0.0.1:$DST_PORT" ;;
+                https) log "reach it: https://$HN.<your-tailnet>.ts.net/ -> $DST_LABEL" ;;
+                http)  log "reach it: http://$HN.<your-tailnet>.ts.net/ -> $DST_LABEL" ;;
                 dns)   log "reach it: dig @$HN.<your-tailnet>.ts.net (udp $SRC_PORT -> 127.0.0.1:$DST_PORT)" ;;
             esac
         fi ;;
     ts-unplug)
-        log "reach it: 127.0.0.1:$PORT -> $REMOTE" ;;
+        if [ -n "$SRC_SOCKET" ]; then
+            log "reach it: unix:$SRC_SOCKET -> $REMOTE"
+        else
+            log "reach it: 127.0.0.1:$PORT -> $REMOTE"
+        fi ;;
     ts-router)
         log "if using DNS routes: sudo $BINDIR/ts-router -config /etc/ts-router/$NAME/routes.json install-resolved" ;;
 esac

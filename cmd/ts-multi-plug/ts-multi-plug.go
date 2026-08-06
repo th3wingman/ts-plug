@@ -116,6 +116,12 @@ func main() {
 		flagHttps.Set("")
 	}
 
+	// DNS is UDP; a stream unix socket upstream makes no sense there.
+	if flagDNS.OutPath != "" {
+		slog.Error("-dns-port does not support unix: upstreams")
+		os.Exit(1)
+	}
+
 	// -border0 is a preset for -header-map; refuse the combination rather
 	// than invent a precedence rule.
 	if *flagBorder0 {
@@ -264,7 +270,7 @@ func startHTTPListener(ctx context.Context, ts *tsnet.Server, lc *local.Client, 
 
 	slog.Info(fmt.Sprintf("listening at (HTTP): http://%s:%d", hostname, portMap.In))
 
-	proxy := createReverseProxy(portMap.Out)
+	proxy := createReverseProxy(portMap)
 	whoisHandler := createWhoisHandler(lc, proxy)
 
 	httpServer := &http.Server{
@@ -305,7 +311,7 @@ func startHTTPSListener(ctx context.Context, ts *tsnet.Server, lc *local.Client,
 		slog.Info(fmt.Sprintf("listening at (HTTPS): https://%s:%d", hostname, portMap.In))
 	}
 
-	proxy := createReverseProxy(portMap.Out)
+	proxy := createReverseProxy(portMap)
 	whoisHandler := createWhoisHandler(lc, proxy)
 
 	httpServer := &http.Server{
@@ -393,14 +399,14 @@ func startTCPListener(ctx context.Context, ts *tsnet.Server, hostname string, po
 	}
 	defer listener.Close()
 
-	slog.Info(fmt.Sprintf("listening at (TCP): %s:%d -> 127.0.0.1:%d", hostname, portMap.In, portMap.Out))
+	slog.Info(fmt.Sprintf("listening at (TCP): %s:%d -> %s", hostname, portMap.In, portMap.UpstreamLabel()))
 
 	go func() {
 		<-ctx.Done()
 		listener.Close()
 	}()
 
-	upstreamAddr := fmt.Sprintf("127.0.0.1:%d", portMap.Out)
+	network, upstreamAddr := portMap.UpstreamNetwork(), portMap.UpstreamAddr()
 	for {
 		client, err := listener.Accept()
 		if err != nil {
@@ -409,18 +415,18 @@ func startTCPListener(ctx context.Context, ts *tsnet.Server, hostname string, po
 			}
 			return fmt.Errorf("TCP accept error: %w", err)
 		}
-		slog.Info("tcp accepted", slog.String("remote", client.RemoteAddr().String()), slog.String("upstream", upstreamAddr))
-		go handleTCPConn(ctx, client, upstreamAddr)
+		slog.Info("tcp accepted", slog.String("remote", client.RemoteAddr().String()), slog.String("upstream", portMap.UpstreamLabel()))
+		go handleTCPConn(ctx, client, network, upstreamAddr)
 	}
 }
 
-// handleTCPConn dials the local upstream and copies bytes bidirectionally
-// until either side closes.
-func handleTCPConn(ctx context.Context, client net.Conn, upstreamAddr string) {
+// handleTCPConn dials the local upstream (tcp port or unix socket) and
+// copies bytes bidirectionally until either side closes.
+func handleTCPConn(ctx context.Context, client net.Conn, network, upstreamAddr string) {
 	defer client.Close()
 
 	d := net.Dialer{Timeout: 5 * time.Second}
-	up, err := d.DialContext(ctx, "tcp", upstreamAddr)
+	up, err := d.DialContext(ctx, network, upstreamAddr)
 	if err != nil {
 		slog.Error("failed to dial upstream", "error", err, "upstream", upstreamAddr)
 		return
@@ -469,22 +475,33 @@ func handleDNSQuery(query []byte, clientAddr net.Addr, tsConn net.PacketConn, up
 	slog.Debug("DNS query handled", "client", clientAddr, "size", n)
 }
 
-// createReverseProxy creates a reverse proxy to the specified localhost port
-func createReverseProxy(port int) *httputil.ReverseProxy {
-	u, err := url.Parse(fmt.Sprintf("http://localhost:%d", port))
+// createReverseProxy creates a reverse proxy to the mapping's upstream:
+// a localhost port, or an HTTP server behind a unix socket.
+func createReverseProxy(portMap *PortMapFlag) *httputil.ReverseProxy {
+	target := fmt.Sprintf("http://localhost:%d", portMap.Out)
+	if portMap.OutPath != "" {
+		// Host is a placeholder; the transport below dials the socket.
+		target = "http://unix"
+	}
+	u, err := url.Parse(target)
 	if err != nil {
 		slog.Error("invalid upstream", "error", err)
 		os.Exit(1)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(u)
-	proxy.Transport = &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout: 2 * time.Second,
-		}).DialContext,
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	transport := &http.Transport{
+		DialContext:           dialer.DialContext,
 		ResponseHeaderTimeout: *flagUpstreamTimeout,
 	}
+	if path := portMap.OutPath; path != "" {
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "unix", path)
+		}
+	}
 
+	proxy := httputil.NewSingleHostReverseProxy(u)
+	proxy.Transport = transport
 	return proxy
 }
 
@@ -640,9 +657,10 @@ func isValidHeaderName(s string) bool {
 }
 
 type PortMapFlag struct {
-	In    int
-	Out   int
-	isSet bool
+	In      int
+	Out     int
+	OutPath string // non-empty: upstream is a unix socket; Out is unused
+	isSet   bool
 
 	defaultIn  int
 	defaultOut int
@@ -660,6 +678,9 @@ func (p *PortMapFlag) String() string {
 	if !p.isSet {
 		return fmt.Sprintf("%d:%d", p.defaultIn, p.defaultOut)
 	}
+	if p.OutPath != "" {
+		return fmt.Sprintf("%d:unix:%s", p.In, p.OutPath)
+	}
 	return fmt.Sprintf("%d:%d", p.In, p.Out)
 }
 
@@ -667,6 +688,31 @@ func (p *PortMapFlag) IsSet() bool {
 	return p.isSet
 }
 
+// UpstreamNetwork returns the network to dial the upstream with.
+func (p *PortMapFlag) UpstreamNetwork() string {
+	if p.OutPath != "" {
+		return "unix"
+	}
+	return "tcp"
+}
+
+// UpstreamAddr returns the address to dial the upstream at.
+func (p *PortMapFlag) UpstreamAddr() string {
+	if p.OutPath != "" {
+		return p.OutPath
+	}
+	return fmt.Sprintf("127.0.0.1:%d", p.Out)
+}
+
+// UpstreamLabel is UpstreamAddr for humans (logs).
+func (p *PortMapFlag) UpstreamLabel() string {
+	if p.OutPath != "" {
+		return "unix:" + p.OutPath
+	}
+	return fmt.Sprintf("127.0.0.1:%d", p.Out)
+}
+
+// Set parses "port", "in:out", or "in:unix:/abs/path".
 func (p *PortMapFlag) Set(value string) error {
 	p.isSet = true
 
@@ -676,29 +722,30 @@ func (p *PortMapFlag) Set(value string) error {
 		return nil
 	}
 
-	// Parse the input string in the format "in:out" or "port"
-	parts := strings.Split(value, ":")
-	if len(parts) == 1 {
-		// If only one part, treat it as both in and out
-		port, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return fmt.Errorf("invalid port format: %s", value)
-		}
-		p.In = port
-		p.Out = port
-
-	} else if len(parts) == 2 {
-		// If two parts, parse as in:out
-		inPort, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return fmt.Errorf("invalid in port format: %s", parts[0])
-		}
-		outPort, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return fmt.Errorf("invalid out port format: %s", parts[1])
-		}
-		p.In = inPort
-		p.Out = outPort
+	parts := strings.SplitN(value, ":", 2)
+	in, err := strconv.Atoi(parts[0])
+	if err != nil || in < 1 || in > 65535 {
+		return fmt.Errorf("invalid in port %q in %q", parts[0], value)
 	}
+	p.In = in
+
+	if len(parts) == 1 {
+		p.Out = in
+		return nil
+	}
+
+	if path, ok := strings.CutPrefix(parts[1], "unix:"); ok {
+		if !strings.HasPrefix(path, "/") {
+			return fmt.Errorf("unix socket path must be absolute: %q", path)
+		}
+		p.OutPath = path
+		return nil
+	}
+
+	out, err := strconv.Atoi(parts[1])
+	if err != nil || out < 1 || out > 65535 {
+		return fmt.Errorf("invalid out %q in %q (want a port number or unix:/abs/path)", parts[1], value)
+	}
+	p.Out = out
 	return nil
 }

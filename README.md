@@ -62,6 +62,10 @@ sudo scripts/install-systemd.sh ts-plug --name grafana --proto https --dst-port 
 # Bring tailnet postgres to 127.0.0.1:5432
 sudo scripts/install-systemd.sh ts-unplug --name db --port 5432 --mode tcp db.tailnet.ts.net:5432
 
+# Unix sockets work on both ends: tailnet-only ssh (zero open TCP ports, systemd 256+),
+# or a remote docker socket mounted locally — see docs/ts-plug.md and docs/ts-unplug.md
+sudo scripts/install-systemd.sh ts-plug --name xps13-ssh --src-port 22 --dst-socket /run/ssh-unix-local/socket
+
 # Remote install (Raspberry Pi etc.): cross-compile, ship, install over SSH
 make deploy HOST=pi.local TS_AUTHKEY=tskey-auth-...
 ```
