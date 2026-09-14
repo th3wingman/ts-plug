@@ -296,13 +296,25 @@ docker exec tsm -ports 22,5432,3000 ts-multinet peers db
 docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
 docker exec tsm ts-multinet reload              # after editing selection config
 sudo ts-multinet select skynet rpi4-sk-01       # expose a peer (patches the config in place)
+sudo ts-multinet --json status | jq '.[] | select(.state=="Running")'
+sudo ts-multinet -details peers dev              # FQDN column + services
+sudo ts-multinet --json check nucbox.skynet:22   # raw fields for scripting
+```
+
+Every command takes `--json` (machine-readable stdout; errors stay on stderr,
+exit codes unchanged) and `--details` (extended human output — a per-tailnet
+block for `status`, the FQDN column for `peers`, raw fields for `check`; the
+JSON replies already carry these fields). Multi-peer `select`/`forget` with
+`--json` emit one object per line.
 sudo ts-multinet forget skynet rpi4-sk-01       # stop exposing it
 sudo ts-multinet allow-all corp on              # every non-Mullvad peer
 sudo ts-multinet domain corp                    # print the friendly suffix (set: domain corp <name>)
 sudo ts-multinet config                         # effective config, as the daemon sees it
+
 ```
 
 ```
+
 == skynet (tail523555.ts.net) — 2 shown, 2 up ==
   STATE NAME            IP              OS     SERVICES
   UP    rpi4-sk-01      100.82.224.14   linux  :22
@@ -312,6 +324,7 @@ host:      rpi4-sk-01.tail523555.ts.net
 tailnet:   skynet (tail523555.ts.net)
 resolve:   rpi4-sk-01.tail523555.ts.net -> 100.82.224.14
 result:    OPEN (60ms) — banner: SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.2
+
 ```
 
 `check` tells you which step broke: `resolve FAILED` (not a peer), `UNREACHABLE`

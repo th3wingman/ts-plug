@@ -85,6 +85,8 @@ func main() {
 	flagPorts := flag.String("ports", "22,80,443,8080", "ports to probe in `peers`")
 	flagProbe := flag.Bool("probe", true, "probe ports of online peers in `peers`")
 	flagSock := flag.String("control-sock", "/run/ts-multinet/control.sock", "control socket path (daemon serves it; peers/check/status query it)")
+	flagJSON := flag.Bool("json", false, "machine-readable output for all commands (errors still go to stderr as text)")
+	flagDetails := flag.Bool("details", false, "extended output — applies to the human and json forms both")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -99,9 +101,10 @@ func main() {
 	// Subcommands are thin clients that query the running daemon's control
 	// socket — they never bring up their own tsnet stacks.
 	if args := flag.Args(); len(args) >= 1 {
+		cli := cliOpts{sock: *flagSock, json: *flagJSON, details: *flagDetails}
 		switch args[0] {
 		case "status":
-			runStatusClient(*flagSock)
+			runStatusClient(cli)
 		case "peers":
 			filter := ""
 			if len(args) >= 2 {
@@ -111,27 +114,27 @@ func main() {
 			if !*flagProbe {
 				ports = ""
 			}
-			runPeersClient(*flagSock, filter, ports)
+			runPeersClient(cli, filter, ports)
 		case "check":
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "usage: ts-multinet check <host[:port]>")
 				os.Exit(1)
 			}
-			runCheckClient(*flagSock, args[1])
+			runCheckClient(cli, args[1])
 		case "login":
 			tailnet := ""
 			if len(args) >= 2 {
 				tailnet = args[1]
 			}
-			runLoginClient(*flagSock, tailnet)
+			runLoginClient(cli, tailnet)
 		case "reload":
-			runReloadClient(*flagSock)
+			runReloadClient(cli)
 		case "select", "forget":
 			if len(args) < 3 {
 				fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer> [peer...]\n", args[0])
 				os.Exit(1)
 			}
-			runSelectForgetClient(*flagSock, args[1], args[0], args[2:])
+			runSelectForgetClient(cli, args[1], args[0], args[2:])
 		case "allow-all":
 			tailnet, arg := "", ""
 			if len(args) >= 2 {
@@ -140,7 +143,7 @@ func main() {
 			if len(args) >= 3 {
 				arg = args[2]
 			}
-			runAllowAllClient(*flagSock, tailnet, arg)
+			runAllowAllClient(cli, tailnet, arg)
 		case "domain":
 			tailnet, arg := "", ""
 			if len(args) >= 2 {
@@ -149,7 +152,7 @@ func main() {
 			if len(args) >= 3 {
 				arg = args[2]
 			}
-			runDomainClient(*flagSock, tailnet, arg)
+			runDomainClient(cli, tailnet, arg)
 		case "hostname":
 			tailnet, arg := "", ""
 			if len(args) >= 2 {
@@ -158,9 +161,9 @@ func main() {
 			if len(args) >= 3 {
 				arg = args[2]
 			}
-			runHostnameClient(*flagSock, tailnet, arg)
+			runHostnameClient(cli, tailnet, arg)
 		case "config":
-			runConfigClient(*flagSock)
+			runConfigClient(cli)
 		case "add":
 			if len(args) < 2 || len(args) == 3 || len(args) > 4 {
 				fmt.Fprintln(os.Stderr, "usage: ts-multinet add <name> [cidr tun] — cidr/tun optional, as a pair")
@@ -170,13 +173,13 @@ func main() {
 			if len(args) == 4 {
 				cidr, tun = args[2], args[3]
 			}
-			runAddClient(*flagSock, args[1], cidr, tun)
+			runAddClient(cli, args[1], cidr, tun)
 		case "remove":
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "usage: ts-multinet remove <name>")
 				os.Exit(1)
 			}
-			runRemoveClient(*flagSock, args[1])
+			runRemoveClient(cli, args[1])
 		default:
 			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", args[0])
 			usage()
@@ -301,6 +304,17 @@ usage:
 bare "ts-multinet" invocation runs the daemon itself. Config edits — tailnets
 included — apply live via 'reload'; only globals (mtu, dns_listen,
 upstream_dns, state_dir, hosts_file, ui_listen) need a service restart.)
+
+output flags (accepted as -json/--json, -details/--details):
+  --json     machine-readable output on stdout for every command; errors stay
+             on stderr as text and exit codes are unchanged. status/peers/
+             check emit the raw server reply (already full detail); mutations
+             emit their {ok,...} reply; config emits compact one-line JSON;
+             multi-peer select/forget emit one object per line (JSONL).
+  --details  extended human output: status gains a per-tailnet block
+             (state, hostname, domain, login URL), peers gains the FQDN
+             column, check appends raw fields. With --json the server reply
+             already carries these fields, so --details is a human-form flag.
 
 flags:
 `)

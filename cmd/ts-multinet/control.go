@@ -381,6 +381,7 @@ func (d *Daemon) reload() string {
 
 type peerJSON struct {
 	Name     string `json:"name"`
+	FQDN     string `json:"fqdn,omitempty"` // full MagicDNS name (peers --details)
 	IP       string `json:"ip"`
 	OS       string `json:"os"`
 	Online   bool   `json:"online"`
@@ -535,7 +536,7 @@ func (d *Daemon) handlePeers(w http.ResponseWriter, r *http.Request) {
 				ip = p.TailscaleIPs[0].String()
 			}
 			tp.Peers = append(tp.Peers, peerJSON{
-				Name: shortName(p.DNSName, tn.suffix), IP: ip, OS: p.OS, Online: p.Online, Services: services[ip],
+				Name: shortName(p.DNSName, tn.suffix), FQDN: strings.TrimSuffix(p.DNSName, "."), IP: ip, OS: p.OS, Online: p.Online, Services: services[ip],
 			})
 		}
 		out = append(out, tp)

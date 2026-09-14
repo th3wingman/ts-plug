@@ -69,20 +69,90 @@ func controlGet(sock, path string, out any) error {
 	return controlDo(sock, http.MethodGet, path, nil, out)
 }
 
-func runStatusClient(sock string) {
+// cliOpts carries the control socket and the output flags to every runner;
+// --json switches stdout to machine-readable output (errors stay on stderr
+// as text, exit codes unchanged), --details extends both human and json forms.
+type cliOpts struct {
+	sock    string
+	json    bool
+	details bool
+}
+
+// marshalPretty is the one JSON encoder every --json path uses, so tests can
+// pin the shape without a socket.
+func marshalPretty(v any) string {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func emitJSON(v any) {
+	fmt.Println(marshalPretty(v))
+}
+
+// mutateResult is the flat reply every /tailnet mutation returns.
+type mutateResult struct {
+	OK    string `json:"ok"`
+	Error string `json:"error"`
+}
+
+func runStatusClient(c cliOpts) {
 	var sts []tailnetStatusJSON
-	if err := controlGet(sock, "/status", &sts); err != nil {
+	if err := controlGet(c.sock, "/status", &sts); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Printf("%-14s %-22s %-16s %-16s %s\n", "TAILNET", "SUFFIX", "OUR IP", "CIDR", "PEERS")
-	for _, s := range sts {
-		fmt.Printf("%-14s %-22s %-16s %-16s %d up / %d\n",
-			s.Name, s.Suffix, s.AssignedIP, s.CIDR, s.Up, s.Peers)
+	if c.json {
+		emitJSON(sts) // the server reply already carries every field; --details adds nothing here
+		return
 	}
+	if c.details {
+		// the effective domain comes from the config (status does not carry it)
+		var cfg Config
+		if err := controlGet(c.sock, "/config", &cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Print(formatStatusDetails(sts, cfg))
+		return
+	}
+	fmt.Print(formatStatusTable(sts))
 }
 
-func runPeersClient(sock, filter, ports string) {
+func formatStatusTable(sts []tailnetStatusJSON) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-14s %-22s %-16s %-16s %s\n", "TAILNET", "SUFFIX", "OUR IP", "CIDR", "PEERS")
+	for _, s := range sts {
+		fmt.Fprintf(&b, "%-14s %-22s %-16s %-16s %d up / %d\n",
+			s.Name, s.Suffix, s.AssignedIP, s.CIDR, s.Up, s.Peers)
+	}
+	return b.String()
+}
+
+func formatStatusDetails(sts []tailnetStatusJSON, cfg Config) string {
+	var b strings.Builder
+	for _, s := range sts {
+		domain := ""
+		if tc := confByName(&cfg, s.Name); tc != nil {
+			domain = tc.domainName()
+		}
+		fmt.Fprintf(&b, "%s — %s\n", s.Name, orDefault(s.State, "?"))
+		fmt.Fprintf(&b, "  suffix    %s\n", orDefault(s.Suffix, "(detecting)"))
+		fmt.Fprintf(&b, "  domain    %s\n", orDefault(domain, s.Name))
+		fmt.Fprintf(&b, "  hostname  %s\n", s.Hostname)
+		fmt.Fprintf(&b, "  our ip    %s\n", orDefault(s.AssignedIP, "—"))
+		fmt.Fprintf(&b, "  cidr      %s\n", s.CIDR)
+		fmt.Fprintf(&b, "  peers     %d up / %d total, %d selected\n", s.Up, s.Peers, s.Selected)
+		if s.LoginURL != "" {
+			fmt.Fprintf(&b, "  login     %s\n", s.LoginURL)
+		}
+	}
+	return b.String()
+}
+
+func runPeersClient(c cliOpts, filter, ports string) {
 	q := url.Values{}
 	if filter != "" {
 		q.Set("filter", filter)
@@ -91,36 +161,68 @@ func runPeersClient(sock, filter, ports string) {
 		q.Set("ports", ports)
 	}
 	var tps []tailnetPeersJSON
-	if err := controlGet(sock, "/peers?"+q.Encode(), &tps); err != nil {
+	if err := controlGet(c.sock, "/peers?"+q.Encode(), &tps); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if c.json {
+		emitJSON(tps)
+		return
+	}
+	if c.details {
+		fmt.Print(formatPeersDetails(tps, filter))
+		return
+	}
+	fmt.Print(formatPeersTable(tps, filter))
+}
+
+func formatPeersTable(tps []tailnetPeersJSON, filter string) string {
+	var b strings.Builder
 	for _, tp := range tps {
 		hint := ""
 		if filter == "" && len(tp.Peers) > 25 {
 			hint = "  (tip: filter, e.g. `peers connector`)"
 		}
-		fmt.Printf("\n== %s (%s) — %d shown, %d up ==%s\n", tp.Name, tp.Suffix, len(tp.Peers), tp.Up, hint)
-		fmt.Printf("  %-5s %-34s %-16s %-7s %s\n", "STATE", "NAME", "IP", "OS", "SERVICES")
+		fmt.Fprintf(&b, "\n== %s (%s) — %d shown, %d up ==%s\n", tp.Name, tp.Suffix, len(tp.Peers), tp.Up, hint)
+		fmt.Fprintf(&b, "  %-5s %-34s %-16s %-7s %s\n", "STATE", "NAME", "IP", "OS", "SERVICES")
 		for _, p := range tp.Peers {
-			state := "down"
-			if p.Online {
-				state = "UP"
-			}
-			svc := "—"
-			if len(p.Services) > 0 {
-				parts := make([]string, len(p.Services))
-				for i, port := range p.Services {
-					parts[i] = ":" + strconv.Itoa(port)
-				}
-				svc = strings.Join(parts, " ")
-			}
-			fmt.Printf("  %-5s %-34s %-16s %-7s %s\n", state, truncate(p.Name, 34), p.IP, p.OS, svc)
+			fmt.Fprintf(&b, "  %-5s %-34s %-16s %-7s %s\n", stateOf(p), truncate(p.Name, 34), p.IP, p.OS, servicesOf(p))
 		}
 	}
+	return b.String()
 }
 
-func runCheckClient(sock, target string) {
+func formatPeersDetails(tps []tailnetPeersJSON, filter string) string {
+	var b strings.Builder
+	for _, tp := range tps {
+		fmt.Fprintf(&b, "\n== %s (%s) — %d shown, %d up ==\n", tp.Name, tp.Suffix, len(tp.Peers), tp.Up)
+		fmt.Fprintf(&b, "  %-5s %-28s %-40s %-16s %-7s %s\n", "STATE", "NAME", "FQDN", "IP", "OS", "SERVICES")
+		for _, p := range tp.Peers {
+			fmt.Fprintf(&b, "  %-5s %-28s %-40s %-16s %-7s %s\n", stateOf(p), truncate(p.Name, 28), truncate(orDefault(p.FQDN, "—"), 40), p.IP, p.OS, servicesOf(p))
+		}
+	}
+	return b.String()
+}
+
+func stateOf(p peerJSON) string {
+	if p.Online {
+		return "UP"
+	}
+	return "down"
+}
+
+func servicesOf(p peerJSON) string {
+	if len(p.Services) == 0 {
+		return "—"
+	}
+	parts := make([]string, len(p.Services))
+	for i, port := range p.Services {
+		parts[i] = ":" + strconv.Itoa(port)
+	}
+	return strings.Join(parts, " ")
+}
+
+func runCheckClient(c cliOpts, target string) {
 	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
 		host, portStr = target, "80"
@@ -129,39 +231,64 @@ func runCheckClient(sock, target string) {
 	q.Set("host", host)
 	q.Set("port", portStr)
 	var res checkJSON
-	if err := controlGet(sock, "/check?"+q.Encode(), &res); err != nil {
+	if err := controlGet(c.sock, "/check?"+q.Encode(), &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if c.json {
+		emitJSON(res)
+		return
+	}
+	fmt.Print(formatCheck(res))
+	if c.details {
+		fmt.Print(formatCheckDetails(res))
+	}
+}
 
-	fmt.Printf("host:      %s\n", res.Host)
+func formatCheck(res checkJSON) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "host:      %s\n", res.Host)
 	switch res.Result {
 	case "no_tailnet":
-		fmt.Printf("result:    no configured tailnet matches that suffix\n")
-		return
+		fmt.Fprintf(&b, "result:    no configured tailnet matches that suffix\n")
 	case "resolve_failed":
 		if res.Tailnet != "" {
-			fmt.Printf("tailnet:   %s (%s)\n", res.Tailnet, res.Suffix)
-			fmt.Printf("resolve:   FAILED — not a known peer on %s\n", res.Tailnet)
-			fmt.Printf("           (run `peers %s` to see what exists)\n", res.Tailnet)
+			fmt.Fprintf(&b, "tailnet:   %s (%s)\n", res.Tailnet, res.Suffix)
+			fmt.Fprintf(&b, "resolve:   FAILED — not a known peer on %s\n", res.Tailnet)
+			fmt.Fprintf(&b, "           (run `peers %s` to see what exists)\n", res.Tailnet)
 		} else {
-			fmt.Printf("resolve:   FAILED — no peer by that name on any tailnet\n")
-			fmt.Printf("           (run `peers` to list, or try host.<tailnet>)\n")
+			fmt.Fprintf(&b, "resolve:   FAILED — no peer by that name on any tailnet\n")
+			fmt.Fprintf(&b, "           (run `peers` to list, or try host.<tailnet>)\n")
 		}
-		return
-	}
-	fmt.Printf("tailnet:   %s (%s)\n", res.Tailnet, res.Suffix)
-	fmt.Printf("resolve:   %s -> %s\n", res.Host, res.ResolvedIP)
-	switch res.Result {
-	case "unreachable":
-		fmt.Printf("result:    UNREACHABLE (%dms) — %s\n", res.LatencyMS, res.Detail)
-	case "open":
-		if res.Banner != "" {
-			fmt.Printf("result:    OPEN (%dms) — banner: %s\n", res.LatencyMS, res.Banner)
-		} else {
-			fmt.Printf("result:    OPEN (%dms) — connected, no banner (server speaks first? try HTTP)\n", res.LatencyMS)
+	default:
+		fmt.Fprintf(&b, "tailnet:   %s (%s)\n", res.Tailnet, res.Suffix)
+		fmt.Fprintf(&b, "resolve:   %s -> %s\n", res.Host, res.ResolvedIP)
+		switch res.Result {
+		case "unreachable":
+			fmt.Fprintf(&b, "result:    UNREACHABLE (%dms) — %s\n", res.LatencyMS, res.Detail)
+		case "open":
+			if res.Banner != "" {
+				fmt.Fprintf(&b, "result:    OPEN (%dms) — banner: %s\n", res.LatencyMS, res.Banner)
+			} else {
+				fmt.Fprintf(&b, "result:    OPEN (%dms) — connected, no banner (server speaks first? try HTTP)\n", res.LatencyMS)
+			}
 		}
 	}
+	return b.String()
+}
+
+// formatCheckDetails appends the raw fields for --details.
+func formatCheckDetails(res checkJSON) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "---\nresolved:  %s\n", orDefault(res.ResolvedIP, "—"))
+	fmt.Fprintf(&b, "tailnet:   %s\n", orDefault(res.Tailnet, "—"))
+	fmt.Fprintf(&b, "suffix:    %s\n", orDefault(res.Suffix, "—"))
+	fmt.Fprintf(&b, "latency:   %dms\n", res.LatencyMS)
+	fmt.Fprintf(&b, "banner:    %s\n", orDefault(res.Banner, "—"))
+	if res.Detail != "" {
+		fmt.Fprintf(&b, "detail:    %s\n", res.Detail)
+	}
+	return b.String()
 }
 
 // controlPost posts JSON to the daemon's unix socket and decodes the response.
@@ -171,7 +298,7 @@ func controlPost(sock, path string, body any, out any) error {
 
 // runAddClient adds a tailnet live. cidr/tun are optional and come as a pair;
 // the server auto-picks the next free synthetic /24 and tsm<N> when omitted.
-func runAddClient(sock, name, cidr, tun string) {
+func runAddClient(c cliOpts, name, cidr, tun string) {
 	body := map[string]string{"name": name}
 	if cidr != "" {
 		body["cidr"], body["tun"] = cidr, tun
@@ -184,13 +311,17 @@ func runAddClient(sock, name, cidr, tun string) {
 		TUN    string `json:"tun"`
 		Domain string `json:"domain"`
 	}
-	if err := controlPost(sock, "/tailnet", body, &res); err != nil {
+	if err := controlPost(c.sock, "/tailnet", body, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	if res.Error != "" {
 		fmt.Fprintln(os.Stderr, "add: "+res.Error)
 		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(res)
+		return
 	}
 	fmt.Printf("added %s — cidr %s, tun %s\n", res.Name, res.CIDR, res.TUN)
 	if res.Domain != "" {
@@ -201,12 +332,9 @@ func runAddClient(sock, name, cidr, tun string) {
 
 // runRemoveClient stops a tailnet and drops it from the config. Node state
 // is kept, so the printed re-add hint needs no new browser login.
-func runRemoveClient(sock, name string) {
-	var res struct {
-		OK    string `json:"ok"`
-		Error string `json:"error"`
-	}
-	if err := controlDo(sock, http.MethodDelete, "/tailnet/"+url.PathEscape(name), nil, &res); err != nil {
+func runRemoveClient(c cliOpts, name string) {
+	var res mutateResult
+	if err := controlDo(c.sock, http.MethodDelete, "/tailnet/"+url.PathEscape(name), nil, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -214,17 +342,25 @@ func runRemoveClient(sock, name string) {
 		fmt.Fprintln(os.Stderr, "remove: "+res.Error)
 		os.Exit(1)
 	}
+	if c.json {
+		emitJSON(res)
+		return
+	}
 	fmt.Println(res.OK)
 	fmt.Printf("re-add anytime: sudo ts-multinet add %s — logs back in without a browser\n", name)
 }
 
-func runLoginClient(sock, tailnet string) {
+func runLoginClient(c cliOpts, tailnet string) {
 	if tailnet == "" {
 		// No argument: report login state for every tailnet.
 		var sts []tailnetStatusJSON
-		if err := controlGet(sock, "/status", &sts); err != nil {
+		if err := controlGet(c.sock, "/status", &sts); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
+		}
+		if c.json {
+			emitJSON(sts)
+			return
 		}
 		for _, s := range sts {
 			switch s.State {
@@ -239,9 +375,13 @@ func runLoginClient(sock, tailnet string) {
 		return
 	}
 	var res loginResult
-	if err := controlPost(sock, "/login", map[string]string{"tailnet": tailnet}, &res); err != nil {
+	if err := controlPost(c.sock, "/login", map[string]string{"tailnet": tailnet}, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(res)
+		return
 	}
 	if res.Error != "" {
 		fmt.Fprintf(os.Stderr, "%s: %s (state: %s)\n", res.Tailnet, res.Error, res.State)
@@ -255,11 +395,15 @@ func runLoginClient(sock, tailnet string) {
 	fmt.Printf("%s: %s — no login needed\n", res.Tailnet, res.State)
 }
 
-func runReloadClient(sock string) {
+func runReloadClient(c cliOpts) {
 	var res map[string]string
-	if err := controlPost(sock, "/reload", map[string]string{}, &res); err != nil {
+	if err := controlPost(c.sock, "/reload", map[string]string{}, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(res)
+		return
 	}
 	fmt.Println(res["ok"])
 }
@@ -267,19 +411,23 @@ func runReloadClient(sock string) {
 // runHostnameClient sets the node name reported inside the tailnet (an
 // empty-string / "-" argument clears the override); with no argument it
 // prints the effective hostname.
-func runHostnameClient(sock, tailnet, arg string) {
+func runHostnameClient(c cliOpts, tailnet, arg string) {
 	if tailnet == "" {
 		fmt.Fprintln(os.Stderr, "usage: ts-multinet hostname <tailnet> [name|-]")
 		os.Exit(1)
 	}
 	if arg == "" || arg == "-" {
 		var cfg Config
-		if err := controlGet(sock, "/config", &cfg); err != nil {
+		if err := controlGet(c.sock, "/config", &cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		for i := range cfg.Tailnets {
 			if strings.EqualFold(cfg.Tailnets[i].Name, tailnet) {
+				if c.json {
+					emitJSON(map[string]string{"tailnet": tailnet, "hostname": cfg.Tailnets[i].nodeHostname()})
+					return
+				}
 				fmt.Println(cfg.Tailnets[i].nodeHostname())
 				if arg == "" {
 					return
@@ -288,41 +436,48 @@ func runHostnameClient(sock, tailnet, arg string) {
 			}
 		}
 	}
-	if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/hostname", map[string]string{"hostname": arg}); err != nil {
+	r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/hostname", map[string]string{"hostname": arg})
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(r)
+		return
 	}
 	fmt.Println("hostname set — the tailnet restarts to report it (no re-login)")
 }
 
 // mutate posts one /tailnet/{name}/... mutation and returns the daemon's
-// error text, if any. Both the success and error replies are flat objects
-// ("ok"/"error"), so one decode covers both.
-func mutate(sock, path string, body any) error {
-	var res struct {
-		OK    string `json:"ok"`
-		Error string `json:"error"`
-	}
+// reply; a non-nil error covers transport failures and server-side errors
+// (the flat "error" field) alike.
+func mutate(sock, path string, body any) (mutateResult, error) {
+	var res mutateResult
 	if err := controlPost(sock, path, body, &res); err != nil {
-		return err
+		return res, err
 	}
 	if res.Error != "" {
-		return errors.New(res.Error)
+		return res, errors.New(res.Error)
 	}
-	return nil
+	return res, nil
 }
 
 // runSelectForgetClient drives select/forget: one POST per peer, stopping at
 // the first failure so a bad name doesn't get lost in the noise.
-func runSelectForgetClient(sock, tailnet, verb string, peers []string) {
+func runSelectForgetClient(c cliOpts, tailnet, verb string, peers []string) {
 	if tailnet == "" || len(peers) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer> [peer...]\n", verb)
 		os.Exit(1)
 	}
 	for _, p := range peers {
-		if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/"+verb, map[string]string{"peer": p}); err != nil {
+		r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/"+verb, map[string]string{"peer": p})
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
+		}
+		if c.json {
+			emitJSON(r) // one object per peer (JSONL) so multi-peer output streams
+			continue
 		}
 		fmt.Printf("%s %s\n", verb, p)
 	}
@@ -339,7 +494,7 @@ func parseOnOff(s string) (bool, error) {
 	return false, fmt.Errorf("expected on or off, got %q", s)
 }
 
-func runAllowAllClient(sock, tailnet, arg string) {
+func runAllowAllClient(c cliOpts, tailnet, arg string) {
 	if tailnet == "" {
 		fmt.Fprintln(os.Stderr, "usage: ts-multinet allow-all <tailnet> [on|off]")
 		os.Exit(1)
@@ -349,9 +504,14 @@ func runAllowAllClient(sock, tailnet, arg string) {
 		fmt.Fprintln(os.Stderr, "allow-all: "+err.Error())
 		os.Exit(1)
 	}
-	if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/allow-all", map[string]bool{"on": on}); err != nil {
+	r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/allow-all", map[string]bool{"on": on})
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(r)
+		return
 	}
 	if on {
 		fmt.Printf("allow-all %s on — every non-Mullvad peer selected\n", tailnet)
@@ -362,14 +522,14 @@ func runAllowAllClient(sock, tailnet, arg string) {
 
 // runDomainClient sets a tailnet's friendly DNS suffix ("-" clears the
 // override); with no argument it prints the effective domain.
-func runDomainClient(sock, tailnet, arg string) {
+func runDomainClient(c cliOpts, tailnet, arg string) {
 	if tailnet == "" {
 		fmt.Fprintln(os.Stderr, "usage: ts-multinet domain <tailnet> [name|-]")
 		os.Exit(1)
 	}
 	if arg == "" {
 		var cfg Config
-		if err := controlGet(sock, "/config", &cfg); err != nil {
+		if err := controlGet(c.sock, "/config", &cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -382,15 +542,24 @@ func runDomainClient(sock, tailnet, arg string) {
 			fmt.Fprintf(os.Stderr, "%s: no such tailnet (known: %s)\n", tailnet, strings.Join(known, ", "))
 			os.Exit(1)
 		}
+		if c.json {
+			emitJSON(map[string]string{"tailnet": tailnet, "domain": tc.domainName()})
+			return
+		}
 		fmt.Printf("%s: %s\n", tailnet, tc.domainName())
 		return
 	}
 	if arg == "-" {
 		arg = ""
 	}
-	if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/domain", map[string]string{"domain": arg}); err != nil {
+	r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/domain", map[string]string{"domain": arg})
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(r)
+		return
 	}
 	if arg == "" {
 		fmt.Printf("domain cleared for %s (back to the tailnet name)\n", tailnet)
@@ -399,15 +568,21 @@ func runDomainClient(sock, tailnet, arg string) {
 	}
 }
 
-// runConfigClient pretty-prints the daemon's effective config as-is.
-func runConfigClient(sock string) {
+// runConfigClient prints the daemon's effective config: pretty by default,
+// compact one-line with --json (for piping into jq etc.).
+func runConfigClient(c cliOpts) {
 	var raw json.RawMessage
-	if err := controlGet(sock, "/config", &raw); err != nil {
+	if err := controlGet(c.sock, "/config", &raw); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	var buf bytes.Buffer
-	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+	if c.json {
+		if err := json.Compact(&buf, raw); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	} else if err := json.Indent(&buf, raw, "", "  "); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
