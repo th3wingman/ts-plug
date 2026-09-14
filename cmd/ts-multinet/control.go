@@ -27,8 +27,118 @@ const probeTimeout = 1500 * time.Millisecond
 // CLI never has to spin up its own tsnet stacks (which would fight for state
 // locks, :53, and authkeys).
 type Daemon struct {
-	tailnets []*Tailnet
-	reg      *registry
+	mu        sync.Mutex
+	tailnets  []*Tailnet
+	reg       *registry
+	cfgPath   string
+	hostsFile string
+}
+
+func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
+	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile}
+}
+
+func (d *Daemon) setTailnets(nets []*Tailnet) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.tailnets = nets
+}
+
+// applySelections resolves every running tailnet's configured selections,
+// seeds deterministic synthetic IPs, and rewrites the /etc/hosts managed
+// block. Called on each tailnet's transition to Running and on reload. A
+// per-tailnet watcher firing at the same time just re-runs the same
+// idempotent rewrite.
+func (d *Daemon) applySelections() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var entries []hostsEntry
+	for _, tn := range d.tailnets {
+		state, _ := tn.status()
+		if state != "Running" {
+			tn.setApplied(0)
+			continue
+		}
+		st, err := tn.lc.Status(context.Background())
+		if err != nil {
+			slog.Warn("selection status failed", "name", tn.conf.Name, "err", err)
+			continue
+		}
+		pins, err := loadPins(tn.stateDir)
+		if err != nil {
+			slog.Error("selection pins unreadable", "name", tn.conf.Name, "err", err)
+			continue
+		}
+		conf := d.confFor(tn.conf.Name)
+		resolved, errs, changed := resolveSelections(tn.suffix, conf, st, pins)
+		for _, e := range errs {
+			slog.Error("selection skipped", "name", tn.conf.Name, "resource", e)
+		}
+		if changed {
+			if err := savePins(tn.stateDir, pins); err != nil {
+				slog.Error("selection pins unwritable", "name", tn.conf.Name, "err", err)
+			}
+		}
+		// Seed in sorted-FQDN order so synthetic IPs are stable across restarts.
+		fqdns := make([]string, 0, len(resolved))
+		for _, r := range resolved {
+			fqdns = append(fqdns, r.FQDN)
+		}
+		sort.Strings(fqdns)
+		d.reg.seed(conf.Name, fqdns)
+		applied := 0
+		for _, r := range resolved {
+			ip, ok := d.reg.allocate(conf.Name, r.FQDN)
+			if !ok {
+				slog.Error("synthetic range exhausted", "name", conf.Name, "resource", r.Short)
+				continue
+			}
+			entries = append(entries, hostsEntry{
+				IP:      ip.String(),
+				Alias:   r.Short + "." + conf.Name,
+				FQDN:    r.FQDN,
+				Tailnet: conf.Name,
+			})
+			applied++
+		}
+		tn.setApplied(applied)
+	}
+	if err := writeHostsBlock(d.hostsFile, entries); err != nil {
+		slog.Error("hosts block rewrite failed", "path", d.hostsFile, "err", err)
+	} else {
+		slog.Info("hosts block updated", "path", d.hostsFile, "entries", len(entries))
+	}
+}
+
+// confFor returns the current on-disk config for a tailnet, falling back to
+// the daemon-start snapshot if the file is unreadable.
+func (d *Daemon) confFor(name string) TailnetConf {
+	b, err := os.ReadFile(d.cfgPath)
+	if err == nil {
+		var c Config
+		if json.Unmarshal(b, &c) == nil {
+			for _, tc := range c.Tailnets {
+				if tc.Name == name {
+					return tc
+				}
+			}
+		}
+	}
+	for _, tn := range d.tailnets {
+		if tn.conf.Name == name {
+			return tn.conf
+		}
+	}
+	return TailnetConf{Name: name}
+}
+
+// reload re-applies selections from the current config file and rewrites the
+// hosts block. Structural changes (adding/removing tailnets, changing cidr or
+// tun) need a daemon restart; selection changes apply immediately.
+func (d *Daemon) reload() string {
+	d.applySelections()
+	return "selections re-applied; structural tailnet changes need a restart"
 }
 
 // --- JSON wire types (shared with the client) ---
@@ -53,6 +163,9 @@ type tailnetStatusJSON struct {
 	Suffix     string `json:"suffix"`
 	CIDR       string `json:"cidr"`
 	AssignedIP string `json:"assigned_ip"`
+	State      string `json:"state"` // NeedsLogin, Running, …
+	LoginURL   string `json:"login_url,omitempty"`
+	Selected   int    `json:"selected"` // selections currently in the hosts block
 	Peers      int    `json:"peers"`
 	Up         int    `json:"up"`
 }
@@ -83,9 +196,11 @@ func (d *Daemon) serveControl(ctx context.Context, sockPath string) {
 	os.Chmod(sockPath, 0660)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/status", d.handleStatus)
-	mux.HandleFunc("/peers", d.handlePeers)
-	mux.HandleFunc("/check", d.handleCheck)
+	mux.HandleFunc("GET /status", d.handleStatus)
+	mux.HandleFunc("GET /peers", d.handlePeers)
+	mux.HandleFunc("GET /check", d.handleCheck)
+	mux.HandleFunc("POST /login", d.handleLogin)
+	mux.HandleFunc("POST /reload", d.handleReload)
 	srv := &http.Server{Handler: mux}
 	go func() { <-ctx.Done(); srv.Close(); os.Remove(sockPath) }()
 
@@ -101,9 +216,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	out := make([]tailnetStatusJSON, 0, len(d.tailnets))
 	for _, tn := range d.tailnets {
-		ts := tailnetStatusJSON{Name: tn.conf.Name, Suffix: tn.suffix, CIDR: tn.conf.CIDR, AssignedIP: tn.assignedIP}
+		state, loginURL := tn.status()
+		ts := tailnetStatusJSON{Name: tn.conf.Name, Suffix: tn.suffix, CIDR: tn.conf.CIDR, AssignedIP: tn.assignedIP, State: state, LoginURL: loginURL, Selected: tn.selectedCount()}
 		if st, err := tn.lc.Status(r.Context()); err == nil {
 			ts.Peers = len(st.Peer)
 			for _, p := range st.Peer {
@@ -131,6 +249,9 @@ func (d *Daemon) handlePeers(w http.ResponseWriter, r *http.Request) {
 		}
 		var matched []*ipnstate.PeerStatus
 		for _, p := range st.Peer {
+			if isMullvad(p.DNSName) {
+				continue // shared transit infrastructure, not a resource
+			}
 			short := shortName(p.DNSName, tn.suffix)
 			if filter != "" && !strings.Contains(short, filter) {
 				continue
@@ -216,6 +337,73 @@ func (d *Daemon) tailnetByName(name string) *Tailnet {
 		}
 	}
 	return nil
+}
+
+// loginResult is the /login response: either a login URL to open in a
+// browser, or the current state when no action is needed.
+type loginResult struct {
+	Tailnet  string `json:"tailnet"`
+	State    string `json:"state"`
+	LoginURL string `json:"login_url,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// handleLogin starts (or reports on) browser login for one tailnet. Persistent
+// state means this is a one-time action per tailnet; later daemon starts come
+// up Running on their own.
+func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Tailnet string `json:"tailnet"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Tailnet == "" {
+		writeJSON(w, loginResult{Error: "tailnet is required"})
+		return
+	}
+	d.mu.Lock()
+	tn := d.tailnetByName(req.Tailnet)
+	d.mu.Unlock()
+	if tn == nil {
+		writeJSON(w, loginResult{Tailnet: req.Tailnet, Error: "no such tailnet"})
+		return
+	}
+	state, _ := tn.status()
+	if state == "Running" {
+		writeJSON(w, loginResult{Tailnet: req.Tailnet, State: state})
+		return
+	}
+	if err := tn.lc.StartLoginInteractive(r.Context()); err != nil {
+		writeJSON(w, loginResult{Tailnet: req.Tailnet, State: state, Error: err.Error()})
+		return
+	}
+	// Poll for the auth URL to surface (usually immediate).
+	loginURL := ""
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := tn.lc.Status(r.Context())
+		if err == nil && st.AuthURL != "" {
+			loginURL = st.AuthURL
+			break
+		}
+		if r.Context().Err() != nil {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	state, _ = tn.status()
+	res := loginResult{Tailnet: req.Tailnet, State: state}
+	if loginURL != "" {
+		res.LoginURL = loginURL
+	} else {
+		res.Error = "login started but no URL surfaced; check `status`"
+	}
+	writeJSON(w, res)
+}
+
+// handleReload re-applies selections from the config file and rewrites the
+// hosts block. Structural changes need a daemon restart.
+func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
+	msg := d.reload()
+	writeJSON(w, map[string]string{"ok": msg})
 }
 
 // probePeers dials each online peer's ports over the tailnet, returning the open

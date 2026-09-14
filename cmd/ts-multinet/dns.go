@@ -24,10 +24,10 @@ import (
 // identifies both the tailnet and the original name.
 type registry struct {
 	mu        sync.Mutex
-	entries   []*tnEntry            // per tailnet
-	byName    map[string]net.IP     // real fqdn -> synthetic IP
-	byIP      map[string]string     // synthetic IP string -> real fqdn
-	cidrs     []*net.IPNet          // all synthetic ranges, for loop guard
+	entries   []*tnEntry             // per tailnet
+	byName    map[string]net.IP      // real fqdn -> synthetic IP
+	byIP      map[string]string      // synthetic IP string -> real fqdn
+	cidrs     []*net.IPNet           // all synthetic ranges, for loop guard
 	resolvers map[string]resolveFunc // tailnet -> peer-list resolver (existence check)
 }
 
@@ -186,6 +186,15 @@ func (r *registry) allocate(tailnet, realFQDN string) (net.IP, bool) {
 	r.byName[realFQDN] = ip
 	r.byIP[ip.String()] = realFQDN
 	return ip, true
+}
+
+// seed pre-allocates synthetic IPs for a tailnet's selection in the given
+// order (callers pass sorted FQDNs) so hosts-block IPs are stable across
+// daemon restarts. Idempotent per name.
+func (r *registry) seed(tailnet string, fqdns []string) {
+	for _, f := range fqdns {
+		_, _ = r.allocate(tailnet, f)
+	}
 }
 
 // isSynthetic reports whether ip falls in any tailnet's synthetic range.

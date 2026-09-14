@@ -1,25 +1,28 @@
 {
   "mtu": 1280,
   "dns_listen": "127.0.0.1:53",
-  "state_dir": ".state",
+  "state_dir": "/var/lib/ts-multinet",
+  "hosts_file": "/etc/hosts",
   "tailnets": [
     {
       "name": "skynet",
-      "authkey_env": "TS_AUTHKEY_SKYNET",
       "cidr": "198.18.1.0/24",
-      "tun": "tsm0"
+      "tun": "tsm0",
+      "resources": ["nucbox", "m4-deb13-hermes"]
     },
     {
-      "name": "tsjustworks",
-      "authkey_env": "TS_AUTHKEY_TSJUSTWORKS",
+      "name": "msinfra",
       "cidr": "198.18.2.0/24",
-      "tun": "tsm1"
+      "tun": "tsm1",
+      "allow_all": false,
+      "resources": ["zombie"]
     },
     {
-      "name": "border0",
-      "authkey_env": "TS_AUTHKEY_BORDER0_COM",
+      "name": "corp",
       "cidr": "198.18.3.0/24",
-      "tun": "tsm2"
+      "tun": "tsm2",
+      "allow_all": false,
+      "resources": ["rpi4-sk-01", "gregd-llm-sandbox-eu-01"]
     }
   ]
 }

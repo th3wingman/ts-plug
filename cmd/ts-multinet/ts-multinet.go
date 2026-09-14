@@ -24,28 +24,47 @@ import (
 	"syscall"
 )
 
-// Config is the on-disk JSON. Auth keys are NOT in here — each tailnet names an
-// env var to read its key from, so secrets stay out of the file.
+// Config is the on-disk JSON. Nodes authenticate with a one-time browser login
+// and persist state under state_dir — no authkeys, no secrets in the file.
 type Config struct {
 	MTU         int           `json:"mtu,omitempty"`          // default 1280
 	DNSListen   string        `json:"dns_listen,omitempty"`   // default 127.0.0.1:53
 	UpstreamDNS string        `json:"upstream_dns,omitempty"` // for non-tailnet names; default: first nameserver in /etc/resolv.conf, else 1.1.1.1
 	StateDir    string        `json:"state_dir,omitempty"`    // base dir for per-tailnet tsnet state; default .state
+	HostsFile   string        `json:"hosts_file,omitempty"`   // managed-block target; default /etc/hosts
 	Tailnets    []TailnetConf `json:"tailnets"`
 }
 
 type TailnetConf struct {
-	Name       string `json:"name"`        // short id, used for state dir + hostname
-	Suffix     string `json:"suffix"`      // MagicDNS suffix, e.g. "skynet.ts.net"
-	AuthKeyEnv string `json:"authkey_env"` // env var holding the auth key
-	CIDR       string `json:"cidr"`        // synthetic range, e.g. "198.18.1.0/24"
-	TUN        string `json:"tun"`         // TUN device name (<=15 chars)
-	StateDir   string `json:"state_dir,omitempty"`
+	Name      string   `json:"name"`                // short id, used for state dir + hostname
+	Suffix    string   `json:"suffix"`              // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
+	CIDR      string   `json:"cidr"`                // synthetic range, e.g. "198.18.1.0/24"
+	TUN       string   `json:"tun"`                 // TUN device name (<=15 chars)
+	Enabled   *bool    `json:"enabled,omitempty"`   // default true
+	AllowAll  bool     `json:"allow_all,omitempty"` // select every non-Mullvad peer instead of listing resources
+	Resources []string `json:"resources,omitempty"` // short names to select (hosts entries + synthetic IPs)
+	StateDir  string   `json:"state_dir,omitempty"`
+}
+
+func (tc TailnetConf) enabled() bool {
+	return tc.Enabled == nil || *tc.Enabled
+}
+
+// inContainer reports whether we're running inside a container netns (Docker
+// or Podman), where hijacking resolv.conf is the established behavior. On the
+// host, the default is to never touch system DNS — selected resources resolve
+// through the /etc/hosts managed block instead.
+func inContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	_, err := os.Stat("/run/.containerenv")
+	return err == nil
 }
 
 func main() {
 	flagConfig := flag.String("config", "/etc/ts-multinet/config.json", "path to JSON config")
-	flagSetResolv := flag.Bool("set-resolv", true, "overwrite /etc/resolv.conf to point at the built-in responder")
+	flagSetResolv := flag.Bool("set-resolv", inContainer(), "point /etc/resolv.conf at the built-in responder (default: true in containers, false on the host)")
 	flagLog := flag.String("log", "info", "log level (debug|info|warn|error)")
 	flagPorts := flag.String("ports", "22,80,443,8080", "ports to probe in `peers`")
 	flagProbe := flag.Bool("probe", true, "probe ports of online peers in `peers`")
@@ -83,6 +102,14 @@ func main() {
 				os.Exit(1)
 			}
 			runCheckClient(*flagSock, args[1])
+		case "login":
+			tailnet := ""
+			if len(args) >= 2 {
+				tailnet = args[1]
+			}
+			runLoginClient(*flagSock, tailnet)
+		case "reload":
+			runReloadClient(*flagSock)
 		default:
 			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", args[0])
 			usage()
@@ -139,9 +166,17 @@ func main() {
 	}
 	base := orDefault(cfg.StateDir, ".state")
 
+	// The daemon exists before the tailnets so each one can fire its
+	// apply-selections callback the moment it reaches Running.
+	daemon := newDaemon(nil, reg, *flagConfig, orDefault(cfg.HostsFile, "/etc/hosts"))
+
 	var nets []*Tailnet
 	for _, tc := range cfg.Tailnets {
-		tn, err := startTailnet(ctx, tc, reg, mtu, base)
+		if !tc.enabled() {
+			slog.Info("tailnet disabled, skipping", "name", tc.Name)
+			continue
+		}
+		tn, err := startTailnet(ctx, tc, reg, mtu, base, daemon.applySelections)
 		if err != nil {
 			slog.Error("tailnet start failed", "name", tc.Name, "err", err)
 			cancel()
@@ -149,10 +184,19 @@ func main() {
 		}
 		nets = append(nets, tn)
 	}
+	daemon.setTailnets(nets)
 	slog.Info("all tailnets up", "count", len(nets))
 
-	daemon := &Daemon{tailnets: nets, reg: reg}
 	go daemon.serveControl(ctx, *flagSock)
+
+	// SIGHUP reloads selection config and rewrites the hosts block.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			daemon.reload()
+		}
+	}()
 
 	<-ctx.Done()
 	slog.Info("shutting down")
@@ -166,11 +210,13 @@ func usage() {
 
 usage:
   ts-multinet [flags]                 run the daemon (TUNs + DNS + forwarders + control socket)
-  ts-multinet [flags] status          show tailnets, our assigned IPs, peer counts
+  ts-multinet [flags] status          show tailnets, states, assigned IPs, selections
   ts-multinet [flags] peers [filter]  list peers and probe their services
   ts-multinet [flags] check <host[:port]>  diagnose one target end-to-end
+  ts-multinet [flags] login [tailnet]  start browser login for a tailnet (or list what needs one)
+  ts-multinet [flags] reload           re-read selection config and rewrite the hosts block
 
-(status/peers/check query the running daemon over its control socket.)
+(status/peers/check/login/reload query the running daemon over its control socket.)
 
 flags:
 `)
@@ -190,8 +236,8 @@ func loadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("config has no tailnets")
 	}
 	for i, tc := range c.Tailnets {
-		if tc.Name == "" || tc.CIDR == "" || tc.TUN == "" || tc.AuthKeyEnv == "" {
-			return nil, fmt.Errorf("tailnet[%d]: name, cidr, tun, authkey_env are all required (suffix is auto-detected if omitted)", i)
+		if tc.Name == "" || tc.CIDR == "" || tc.TUN == "" {
+			return nil, fmt.Errorf("tailnet[%d]: name, cidr, tun are all required (suffix is auto-detected if omitted; login is via `ts-multinet login %s`)", i, tc.Name)
 		}
 		if len(tc.TUN) > 15 {
 			return nil, fmt.Errorf("tailnet[%d]: tun name %q exceeds 15 chars", i, tc.TUN)

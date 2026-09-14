@@ -1,7 +1,8 @@
 # ts-multinet — design, comparison, and continuation notes
 
-> **Status: RnD MVP.** Linux only, runs in a container netns. Verified live
-> across three tailnets (TCP, UDP, ICMP). See
+> **Status: MVP.** Linux. Runs directly on the host or in a container netns.
+> Verified live across three tailnets (TCP, UDP, ICMP). Host mode: persistent
+> browser-login nodes, selected resources, `/etc/hosts` managed block. See
 > [`cmd/ts-multinet/README.md`](../cmd/ts-multinet/README.md) for the quickstart.
 
 `ts-multinet` runs **several tailnets transparently on one host at the same
@@ -72,10 +73,11 @@ search), via `registry.locate`.
 ### Control plane
 
 The daemon serves a JSON API over a unix socket
-(`/run/ts-multinet/control.sock`). `status` / `peers` / `check` are thin clients
-that query the **running daemon** — they never spin up their own tsnet stacks
-(which would collide on state locks, `:53`, and authkeys). Run them with
-`docker exec <container> ts-multinet <cmd>`.
+(`/run/ts-multinet/control.sock`). `status` / `peers` / `check` / `login` /
+`reload` are thin clients that query the **running daemon** — they never spin up
+their own tsnet stacks (which would collide on state locks, `:53`, and
+authkeys). Run them with `docker exec <container> ts-multinet <cmd>`, or
+`sudo ts-multinet <cmd>` on the host.
 
 ## ts-multinet vs a full `tailscaled` client
 
@@ -128,19 +130,20 @@ Everything a fresh session needs to pick this up.
 ## Where things are
 
 - **Code:** `cmd/ts-multinet/` (one binary). Files: `ts-multinet.go` (main +
-  config + subcommand dispatch), `tailnet.go` (per-tailnet bring-up, resolver,
-  pinger, assigned-IP-on-TUN), `forwarder.go` (gVisor stack, TCP forwarder,
-  ICMP interception, packet pump), `udp.go`, `icmp.go`, `dns.go` (responder +
-  synthetic-IP registry + allocator), `control.go` (daemon registry + unix
-  socket server), `controlclient.go` (CLI clients + formatting), `tun_linux.go`
-  (raw TUN via ioctl + `ip` helpers).
-- **Branches** (both pushed to origin):
-  - `ts-plug/multi-tailnet-tun` — MVP checkpoint, frozen.
-  - `ts-plug/multinet-protocols` — current: UDP, ICMP, control socket, TUN-IP.
-- **Auth keys:** `.envrc` in the repo root (gitignored) exports
-  `TS_AUTHKEY_SKYNET`, `TS_AUTHKEY_TSJUSTWORKS`, `TS_AUTHKEY_BORDER0_COM`.
-  `config.example.json` is wired to those three. Pinned deps:
-  `gvisor.dev/gvisor@v0.0.0-20250205023644`, `tailscale.com@v1.94.2`.
+  config + subcommand dispatch), `tailnet.go` (per-tailnet bring-up, status
+  watcher, resolver, pinger, assigned-IP-on-TUN), `forwarder.go` (gVisor stack,
+  TCP forwarder, ICMP interception, packet pump), `udp.go`, `icmp.go`, `dns.go`
+  (responder + synthetic-IP registry + allocator), `selection.go` (selection
+  resolution, identity pins, Mullvad filter), `hosts.go` (/etc/hosts managed
+  block), `control.go` (daemon registry + unix socket server),
+  `controlclient.go` (CLI clients + formatting), `tun_linux.go` (raw TUN via
+  ioctl + `ip` helpers).
+- **Branches:** merged to `main`; host-mode work lives on
+  `ts-plug/multinet-host-mode`.
+- **Auth:** no authkeys — persistent nodes with one-time browser login
+  (`ts-multinet login <tailnet>`); state under `state_dir` (default
+  `/var/lib/ts-multinet`). Pinned deps: `gvisor.dev/gvisor@v0.0.0-20250205023644`,
+  `tailscale.com@v1.94.2`.
 
 ## Build & test (Docker only — never run go/python on the host)
 
@@ -186,17 +189,23 @@ The image (alpine) ships a toolbox: `dig`, `curl`, `nc`, `tcpdump`, `jq`, `bash`
 
 ## Roadmap / next steps
 
-1. **Host-wide mode** — the big one. Drop the container netns and run on the
-   host (`-set-resolv=false`, wire DNS deliberately). This is what turns it from
-   a demo into the thing you actually wanted: your whole desktop on N tailnets
-   at once. Watch out for colliding with the host's own `tailscaled`/resolved.
-2. **macOS / Windows backends** — single-TUN (utun / Wintun), no eBPF. The
+1. ~~**Host-wide mode**~~ — **done.** Runs on the host with zero system-DNS
+   mutation: persistent browser-login nodes, config-selected resources,
+   identity pins, and an `/etc/hosts` managed block. The Mullvad exits that
+   flood big tailnets are filtered out of listings and selection (adopted from
+   Cauldron's connector implementation).
+2. **Proper host DNS** — register the responder with systemd-resolved the
+   right way (or bind it on the TUN) so bare names resolve system-wide.
+3. **macOS / Windows backends** — single-TUN (utun / Wintun), no eBPF. The
    steering core (DNS + synthetic ranges + tun2socks) is already
    device-count-agnostic; only the TUN plumbing differs per OS.
-3. **Literal `100.x` IP access** — needs per-app/cgroup disambiguation because
+4. **Literal `100.x` IP access** — needs per-app/cgroup disambiguation because
    CGNAT ranges overlap across tailnets. The synthetic-name trick exists to
    dodge exactly this.
-4. **Fidelity/throughput** — collapsing the double stack is hard (tsnet *is*
+5. **Fidelity/throughput** — collapsing the double stack is hard (tsnet *is*
    gVisor); kernel-WireGuard-per-tailnet would be faster but reintroduces
    routing-table collisions (multi-instance tailscaled pain).
-5. **IPv6 synthetic range** (currently A-only; AAAA returns empty NOERROR).
+6. **IPv6 synthetic range** (currently A-only; AAAA returns empty NOERROR),
+   plus user-defined synthetic ranges.
+7. **CLI selection commands (`select`/`forget`) and a local web UI / tray** —
+   the control socket is the substrate; config editing suffices today.

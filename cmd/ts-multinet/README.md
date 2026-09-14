@@ -8,8 +8,10 @@ userspace **tsnet** node; in front of each we run a small gVisor TCP/IP stack on
 its own TUN device (tun2socks style) and re-dial every connection out through
 that tailnet.
 
-> **Status: MVP / RnD.** Linux only, runs inside a container network namespace.
-> TCP, UDP, and ICMP-echo work; macOS/Windows and host-wide mode are future work.
+> **Status: MVP.** Linux. Runs directly on the host (recommended) or inside a
+> container network namespace. TCP, UDP, and ICMP-echo work. Nodes are
+> persistent with one-time browser login; selected resources land in
+> `/etc/hosts`.
 >
 > For architecture, the full `tailscaled` comparison, and continuation notes
 > (code map, gotchas, roadmap), see **[docs/ts-multinet.md](../../docs/ts-multinet.md)**.
@@ -48,19 +50,56 @@ to dial. No L3 NAT, no real-tailnet-IP bookkeeping — tsnet resolves the name.
 
 ```json
 {
-  "mtu": 1280,
-  "dns_listen": "127.0.0.1:53",
+  "state_dir": "/var/lib/ts-multinet",
+  "hosts_file": "/etc/hosts",
   "tailnets": [
-    {"name": "skynet",   "suffix": "skynet.ts.net",   "authkey_env": "TS_AUTHKEY_SKYNET",   "cidr": "198.18.1.0/24", "tun": "tsm-skynet"},
-    {"name": "othernet", "suffix": "othernet.ts.net", "authkey_env": "TS_AUTHKEY_OTHERNET", "cidr": "198.18.2.0/24", "tun": "tsm-othernet"}
+    {"name": "skynet", "cidr": "198.18.1.0/24", "tun": "tsm0", "resources": ["nucbox"]},
+    {"name": "corp",   "cidr": "198.18.3.0/24", "tun": "tsm2", "allow_all": false,
+     "resources": ["rpi4-sk-01", "gregd-llm-sandbox-eu-01"]}
   ]
 }
 ```
 
-- **Auth keys are read from env**, not the file. Use reusable or ephemeral keys.
+- **No authkeys.** Each tailnet is a persistent node: log it in once with
+  `ts-multinet login <tailnet>` (prints a browser URL); state persists under
+  `state_dir` and survives restarts. Set `TS_AUTHKEY`-style env vars and the
+  daemon refuses to start that tailnet — an ambient key would enroll into the
+  wrong tailnet.
+- **Selection** — per tailnet, `resources` lists the short names you care
+  about (as `peers` shows them); `"allow_all": true` selects every peer
+  instead. Shared Mullvad exit peers are never selectable. Selections are
+  **identity-pinned**: the daemon records each peer's stable node key, so a
+  renamed or replaced peer under the same name fails loudly instead of
+  silently redirecting (delete the pin in `<state_dir>/<tailnet>/selections.json`
+  to re-select).
+- **`/etc/hosts` managed block** — every selected resource gets a line between
+  `# ts-multinet begin` / `# ts-multinet end`, pointing both the friendly alias
+  and the full MagicDNS name at the resource's synthetic IP:
+
+```
+198.18.1.5 nucbox.skynet nucbox.tail523555.ts.net  # ts-multinet (skynet)
+```
+
+  Everything outside the markers is preserved. IPs are allocated in sorted
+  name order, so they're stable across restarts.
 - `tun` names must be ≤15 chars (kernel `IFNAMSIZ`).
 - Non-tailnet DNS is forwarded to the upstream inherited from the original
   `/etc/resolv.conf` (override with `"upstream_dns"`).
+
+## Run (host)
+
+The daemon needs root for the TUNs, routes, and `/etc/hosts`:
+
+```sh
+sudo ts-multinet -config /etc/ts-multinet/config.json &
+sudo ts-multinet login skynet     # prints a URL; open it, authenticate, done — forever
+sudo ts-multinet login msinfra
+sudo ts-multinet status           # states, assigned IPs, selections per tailnet
+```
+
+On the host the daemon **never touches system DNS** — selected resources
+resolve via the `/etc/hosts` block, and it coexists with your regular
+`tailscaled` (synthetic ranges never overlap `100.64.0.0/10`).
 
 ## Run (container)
 
@@ -68,12 +107,16 @@ to dial. No L3 NAT, no real-tailnet-IP bookkeeping — tsnet resolves the name.
 # from the repo root
 make docker-ts-multinet
 
-docker run --rm -it \
+docker run -d --name tsm \
   --cap-add NET_ADMIN --device /dev/net/tun \
-  -e TS_AUTHKEY_SKYNET=tskey-auth-... \
-  -e TS_AUTHKEY_OTHERNET=tskey-auth-... \
+  -v tsm-state:/var/lib/ts-multinet \
   ts-multinet
+
+docker exec tsm ts-multinet login skynet   # one-time; state persists in the volume
 ```
+
+Inside the container resolv.conf points at the built-in responder (as before),
+so every peer resolves, selected or not.
 
 Then, in another shell, exercise both tailnets transparently:
 
@@ -92,11 +135,12 @@ that query it. Run them **inside the running daemon** — no second tsnet stack,
 no state/`:53`/authkey collisions:
 
 ```sh
-docker exec tsm ts-multinet status              # tailnets, our assigned IPs, peer counts
-docker exec tsm ts-multinet peers               # all hosts + probed services (filter on big tailnets)
+docker exec tsm ts-multinet status              # tailnets, states, assigned IPs, selections
+docker exec tsm ts-multinet peers               # all hosts + probed services (Mullvad exits hidden)
 docker exec tsm ts-multinet peers rpi4          # name filter
 docker exec tsm -ports 22,5432,3000 ts-multinet peers db
 docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
+docker exec tsm ts-multinet reload              # after editing selection config
 ```
 ```
 == skynet (tail523555.ts.net) — 2 shown, 2 up ==
@@ -129,7 +173,8 @@ synthetic-range traffic correctly instead of bouncing off the container's eth0.
 
 - **Name-based only.** Connecting to a literal `100.x` tailnet IP isn't steered
   — that's the overlapping-CGNAT case the synthetic ranges exist to avoid.
-- **Container netns assumed.** Running on the host would rewrite the host's
-  `/etc/resolv.conf` and add host routes. Use `-set-resolv=false` and wire DNS
-  yourself if you try that.
+- **Host mode resolves selected resources via /etc/hosts.** Bare short names
+  (`ping nucbox`) don't expand on the host — use the alias form
+  (`nucbox.skynet`). Proper host DNS (responder registered with
+  systemd-resolved) is on the roadmap.
 - **IPv4 synthetic only.** AAAA queries return empty so clients fall back to A.

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -123,6 +124,71 @@ func runCheckClient(sock, target string) {
 			fmt.Printf("result:    OPEN (%dms) — connected, no banner (server speaks first? try HTTP)\n", res.LatencyMS)
 		}
 	}
+}
+
+// controlPost posts JSON to the daemon's unix socket and decodes the response.
+func controlPost(sock, path string, body any, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	c := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+		},
+	}}
+	resp, err := c.Post("http://unix"+path, "application/json", bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("no daemon at %s — is it running? (%w)", sock, err)
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func runLoginClient(sock, tailnet string) {
+	if tailnet == "" {
+		// No argument: report login state for every tailnet.
+		var sts []tailnetStatusJSON
+		if err := controlGet(sock, "/status", &sts); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for _, s := range sts {
+			switch s.State {
+			case "Running":
+				fmt.Printf("%-14s running\n", s.Name)
+			case "NeedsLogin":
+				fmt.Printf("%-14s needs login: ts-multinet login %s\n", s.Name, s.Name)
+			default:
+				fmt.Printf("%-14s %s\n", s.Name, s.State)
+			}
+		}
+		return
+	}
+	var res loginResult
+	if err := controlPost(sock, "/login", map[string]string{"tailnet": tailnet}, &res); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if res.Error != "" {
+		fmt.Fprintf(os.Stderr, "%s: %s (state: %s)\n", res.Tailnet, res.Error, res.State)
+		os.Exit(1)
+	}
+	if res.LoginURL != "" {
+		fmt.Printf("open in a browser to join %s:\n\n  %s\n\n", res.Tailnet, res.LoginURL)
+		fmt.Println("the tailnet connects once you authenticate; state persists across restarts")
+		return
+	}
+	fmt.Printf("%s: %s — no login needed\n", res.Tailnet, res.State)
+}
+
+func runReloadClient(sock string) {
+	var res map[string]string
+	if err := controlPost(sock, "/reload", map[string]string{}, &res); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(res["ok"])
 }
 
 func truncate(s string, n int) string {
