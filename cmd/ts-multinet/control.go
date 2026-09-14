@@ -127,7 +127,7 @@ func (d *Daemon) applySelections() {
 			}
 			entries = append(entries, hostsEntry{
 				IP:      ip.String(),
-				Alias:   r.Short + "." + conf.Name,
+				Alias:   r.Short + "." + conf.domainName(),
 				FQDN:    r.FQDN,
 				Tailnet: conf.Name,
 			})

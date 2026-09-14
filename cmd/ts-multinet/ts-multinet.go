@@ -148,18 +148,27 @@ func main() {
 	defer cancel()
 
 	ds := &dnsServer{reg: reg, upstream: upstream}
-	if err := startDNS(cfg.DNSListen, ds); err != nil {
-		slog.Error("dns", "err", err)
-		os.Exit(1)
+	dnsAddr := orDefault(cfg.DNSListen, "127.0.0.1:53")
+	dnsUp := true
+	if err := startDNS(dnsAddr, ds); err != nil {
+		// In a container resolv.conf points at us — there is no falling back.
+		if inContainer() {
+			slog.Error("dns", "listen", dnsAddr, "err", err)
+			os.Exit(1)
+		}
+		dnsUp = false
+		slog.Warn("dns listen failed: continuing without host DNS; /etc/hosts block still works", "listen", dnsAddr, "err", err)
+	} else {
+		slog.Info("dns responder up", "listen", dnsAddr, "upstream", upstream)
 	}
-	slog.Info("dns responder up", "listen", orDefault(cfg.DNSListen, "127.0.0.1:53"), "upstream", upstream)
+	rs := newResolvedSync(dnsAddr, dnsUp)
 
 	if *flagSetResolv {
-		// search = friendly tailnet names, so `ping host` expands to
-		// host.<tailnet> and resolves against whichever tailnet actually has it.
+		// search = friendly domains, so `ping host` expands to host.<domain>
+		// and resolves against whichever tailnet actually has it.
 		names := make([]string, 0, len(cfg.Tailnets))
 		for _, tc := range cfg.Tailnets {
-			names = append(names, tc.Name)
+			names = append(names, tc.domainName())
 		}
 		resolv := "nameserver 127.0.0.1\n"
 		if len(names) > 0 {
@@ -186,7 +195,7 @@ func main() {
 			slog.Info("tailnet disabled, skipping", "name", tc.Name)
 			continue
 		}
-		tn, err := startTailnet(ctx, tc, reg, mtu, base, daemon.applySelections)
+		tn, err := startTailnet(ctx, tc, reg, mtu, base, daemon.applySelections, rs)
 		if err != nil {
 			slog.Error("tailnet start failed", "name", tc.Name, "err", err)
 			cancel()
@@ -213,6 +222,7 @@ func main() {
 	for _, tn := range nets {
 		tn.Close()
 	}
+	rs.revertAll()
 }
 
 func usage() {

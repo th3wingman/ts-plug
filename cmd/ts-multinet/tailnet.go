@@ -36,6 +36,7 @@ type Tailnet struct {
 	stateDir   string // resolved tsnet state dir; selection pins live next to it
 	assignedIP string
 	resolve    resolveFunc
+	resolved   *resolvedSync // systemd-resolved registration; nil in tests
 
 	mu       sync.Mutex
 	state    string // ipnstate backend state: NeedsLogin, Running, …
@@ -48,7 +49,7 @@ type Tailnet struct {
 // enroll this node into the wrong tailnet (Cauldron's cross-enrollment guard).
 var ambientAuthEnvs = []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TS_CLIENT_SECRET", "TS_CLIENT_ID", "TS_ID_TOKEN", "TS_AUDIENCE"}
 
-func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func()) (*Tailnet, error) {
+func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error) {
 	for _, key := range ambientAuthEnvs {
 		if os.Getenv(key) != "" {
 			return nil, fmt.Errorf("tailnet %q: %s is set — nodes use persistent state + browser login (`ts-multinet login %s`), unset it to avoid enrolling into the wrong tailnet", conf.Name, key, conf.Name)
@@ -96,15 +97,17 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	}
 
 	// A pinned suffix is known from the start; otherwise it is auto-detected
-	// from the netmap once the tailnet is Running.
+	// from the netmap once the tailnet is Running. The friendly domain follows
+	// the config (registerDomain keeps DNS in sync when it changes).
 	suffix := strings.TrimSuffix(strings.ToLower(conf.Suffix), ".")
 	if suffix != "" {
 		reg.registerSuffix(conf.Name, suffix)
 	}
+	reg.registerDomain(conf.Name, conf.domainName())
 
 	resolve := newTailnetResolver(lc)
 	reg.registerResolver(conf.Name, resolve)
-	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolve: resolve}
+	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolve: resolve, resolved: rs}
 
 	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, resolve, newPinger(lc))
 	go func() {
@@ -119,9 +122,11 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 }
 
 // watch polls the tailnet's backend state: it records login state for the
-// control plane, registers the MagicDNS suffix once known, places the assigned
-// tailnet IP on the TUN once Running, and fires onRunning (selections → hosts
-// rewrite) on the transition to Running.
+// control plane, registers the MagicDNS suffix and the systemd-resolved link
+// config once known, places the assigned tailnet IP on the TUN once Running,
+// and fires onRunning (selections → hosts rewrite) on the transition to
+// Running. resolved registration re-runs (cheap, idempotent) so a domain
+// change through the control plane lands on the next poll.
 func (t *Tailnet) watch(ctx context.Context, reg *registry, onRunning func()) {
 	var suffixDone, addrDone, runningNotified bool
 	tick := time.NewTicker(3 * time.Second)
@@ -161,6 +166,9 @@ func (t *Tailnet) watch(ctx context.Context, reg *registry, onRunning func()) {
 						}
 						addrDone = true
 					}
+				}
+				if suffixDone && addrDone {
+					t.resolved.register(t.dev, t.suffix, t.conf.domainName())
 				}
 				if !runningNotified && addrDone {
 					runningNotified = true
