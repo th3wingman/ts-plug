@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -54,6 +55,29 @@ func addRoute(cidr, dev string) error {
 // traffic from it (our real tailnet IP) instead of bouncing off eth0.
 func addAddr(dev, ipCIDR string) error {
 	return run("ip", "addr", "add", ipCIDR, "dev", dev)
+}
+
+// delRoute removes the synthetic route we added. The kernel tears a closed
+// TUN device down asynchronously and can wait on the route, keeping the name
+// busy (TUNSETIFF EBUSY) for a stop/start of the same tailnet — so drop it
+// explicitly before the fd closes. Failing is fine: the device may be gone.
+func delRoute(cidr, dev string) error {
+	return run("ip", "route", "del", cidr, "dev", dev)
+}
+
+// flushAddr drops the address we put on the device, same reason as delRoute.
+func flushAddr(dev string) error {
+	return run("ip", "addr", "flush", "dev", dev)
+}
+
+// cleanupTUNImpl is stopTailnet's default device cleanup.
+func cleanupTUNImpl(cidr, dev string) {
+	if err := delRoute(cidr, dev); err != nil {
+		slog.Warn("route cleanup failed (device may already be gone)", "dev", dev, "err", err)
+	}
+	if err := flushAddr(dev); err != nil {
+		slog.Warn("addr cleanup failed (device may already be gone)", "dev", dev, "err", err)
+	}
 }
 
 func run(args ...string) error {

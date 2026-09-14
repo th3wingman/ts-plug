@@ -41,16 +41,21 @@ type Daemon struct {
 	// uses the same path, so a boot-time add and an API add are identical.
 	// starter is swappable so tests can watch starts/stops without tsnet.
 	rt struct {
-		ctx     context.Context
-		mtu     uint32
-		baseDir string
-		rs      *resolvedSync
-		starter func(ctx context.Context, conf TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error)
+		ctx        context.Context
+		mtu        uint32
+		baseDir    string
+		rs         *resolvedSync
+		starter    func(ctx context.Context, conf TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error)
+		cleanupTUN func(cidr, dev string) // stopTailnet device cleanup; swappable in tests
 	}
 
 	// cfgMu serializes config mutations so concurrent control requests
 	// can't lose updates; d.mu still guards the tailnet list itself.
 	cfgMu sync.Mutex
+
+	// tunRetries marks tailnet names with a busy-TUN background retry in
+	// flight, so a second spawn is a no-op. Guarded by d.mu.
+	tunRetries map[string]bool
 
 	// peerShorts lists a tailnet's selectable peer short names. A field so
 	// control tests can stub the live tsnet status.
@@ -58,7 +63,7 @@ type Daemon struct {
 }
 
 func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
-	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts}
+	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, tunRetries: map[string]bool{}}
 }
 
 // livePeerShorts is the production peerShorts: live status, Mullvad exits
@@ -97,6 +102,9 @@ func (d *Daemon) syncTailnets(cfg *Config) error {
 	if d.rt.starter == nil {
 		d.rt.starter = startTailnet
 	}
+	if d.rt.cleanupTUN == nil {
+		d.rt.cleanupTUN = cleanupTUNImpl
+	}
 
 	wantByName := make(map[string]*TailnetConf, len(cfg.Tailnets))
 	for i := range cfg.Tailnets {
@@ -130,27 +138,95 @@ func (d *Daemon) syncTailnets(cfg *Config) error {
 		if !tc.enabled() || live[strings.ToLower(tc.Name)] {
 			continue
 		}
-		if err := d.reg.add(tc); err != nil {
-			startErrs = append(startErrs, err.Error())
-			continue
-		}
-		slog.Info("tailnet starting", "name", tc.Name, "tun", tc.TUN, "cidr", tc.CIDR)
-		tn, err := startWithTUNRetry(d.rt.starter, d.rt.ctx, tc, d.reg, d.rt.mtu, d.rt.baseDir, d.applySelections, d.rt.rs)
-		if err != nil {
-			d.reg.remove(tc.Name)
+		if err := d.startOne(tc); err != nil {
 			startErrs = append(startErrs, fmt.Sprintf("%s: %v", tc.Name, err))
+			if isTUNBusy(err) {
+				// the kernel can need tens of seconds to release the name
+				// (deferred device teardown) — retry patiently in the background
+				d.spawnTUNRetry(tc)
+			}
 			continue
 		}
-		d.mu.Lock()
-		d.tailnets = append(d.tailnets, tn)
-		d.mu.Unlock()
 	}
-
 	d.applySelections()
 	if len(startErrs) > 0 {
 		return fmt.Errorf("tailnets in config but not started (retried on every config change and `reload`): %s", strings.Join(startErrs, "; "))
 	}
 	return nil
+}
+
+// isTUNBusy reports whether a start error is the kernel holding the tun
+// name — the only failure safe to blindly retry (openTUN fails before any
+// resource exists).
+func isTUNBusy(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "device or resource busy")
+}
+
+// startOne starts one tailnet (quick busy retries included) and adds it to
+// the running set. Shared by syncTailnets and the background busy retry.
+func (d *Daemon) startOne(tc TailnetConf) error {
+	if err := d.reg.add(tc); err != nil {
+		return err
+	}
+	slog.Info("tailnet starting", "name", tc.Name, "tun", tc.TUN, "cidr", tc.CIDR)
+	tn, err := startWithTUNRetry(d.rt.starter, d.rt.ctx, tc, d.reg, d.rt.mtu, d.rt.baseDir, d.applySelections, d.rt.rs)
+	if err != nil {
+		d.reg.remove(tc.Name)
+		return err
+	}
+	d.mu.Lock()
+	d.tailnets = append(d.tailnets, tn)
+	d.mu.Unlock()
+	return nil
+}
+
+// tunRetryBackoff is the schedule a parked busy-TUN start retries on after
+// the quick in-sync attempts. Swappable in tests for a fast schedule.
+var tunRetryBackoff = []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second, 45 * time.Second}
+
+// spawnTUNRetry retries a busy-TUN start in the background: one goroutine
+// per tailnet name (a second spawn while one is pending is a no-op), on
+// tunRetryBackoff, until it starts, the tailnet leaves the config, or the
+// daemon shuts down.
+func (d *Daemon) spawnTUNRetry(tc TailnetConf) {
+	d.mu.Lock()
+	if d.tunRetries[tc.Name] {
+		d.mu.Unlock()
+		return
+	}
+	d.tunRetries[tc.Name] = true
+	d.mu.Unlock()
+	go func() {
+		defer func() {
+			d.mu.Lock()
+			delete(d.tunRetries, tc.Name)
+			d.mu.Unlock()
+		}()
+		for _, wait := range tunRetryBackoff {
+			select {
+			case <-d.rt.ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			if !d.tailnetInConfig(tc.Name) {
+				return // removed from config while we waited
+			}
+			d.mu.Lock()
+			running := d.tailnetByName(tc.Name) != nil
+			d.mu.Unlock()
+			if running {
+				return // a sync started it meanwhile
+			}
+			if err := d.startOne(tc); err == nil {
+				d.applySelections()
+				slog.Info("tailnet started after busy retry", "name", tc.Name, "tun", tc.TUN)
+				return
+			} else {
+				slog.Warn("tun name still busy, background retry scheduled", "name", tc.Name, "tun", tc.TUN, "err", err)
+			}
+		}
+		slog.Warn("tun name stayed busy; retried again on the next config change or `reload`", "name", tc.Name, "tun", tc.TUN)
+	}()
 }
 
 // startWithTUNRetry retries a start whose TUN name is briefly held: the
@@ -181,6 +257,12 @@ func (d *Daemon) stopTailnet(tn *Tailnet) {
 		tn.resolved.revert(tn.dev)
 	}
 	d.reg.remove(tn.conf.Name)
+	// Drop the route and address we put on the device before its fd closes:
+	// the kernel's deferred teardown can wait on them and keep the name busy
+	// (TUNSETIFF EBUSY) for a stop/start of the same tailnet.
+	if d.rt.cleanupTUN != nil {
+		d.rt.cleanupTUN(tn.conf.CIDR, tn.dev)
+	}
 	tn.Close()
 	slog.Info("tailnet stopped", "name", tn.conf.Name, "tun", tn.dev)
 }
@@ -253,8 +335,6 @@ func (d *Daemon) applySelections() {
 }
 
 // confFor returns the current on-disk config for a tailnet, falling back to
-// the daemon-start snapshot if the file is unreadable.
-// confFor returns the current on-disk config for a tailnet, falling back to
 // the daemon-start snapshot if the file is unreadable. loadConfig (not raw
 // Unmarshal) so commented configs parse.
 func (d *Daemon) confFor(name string) TailnetConf {
@@ -326,8 +406,11 @@ func (d *Daemon) applyConfigUpdate(fn func(*Config) error) (string, error) {
 		return "", err
 	}
 	notice := restartNotice(prev, cfg)
-	if err := d.syncTailnets(cfg); err != nil {
-		return notice, err
+	if serr := d.syncTailnets(cfg); serr != nil {
+		// the requested change IS written; a start failure just parks the
+		// tailnet (retried on the next change, `reload`, or the background
+		// busy retry) — report it as a notice, not a request failure
+		notice = strings.TrimSpace(notice + "; " + serr.Error())
 	}
 	return notice, nil
 }
@@ -725,7 +808,12 @@ func (e clientError) Error() string { return e.msg }
 // fn, and commit through applyConfigUpdate (comment-preserving write +
 // re-apply). Peer and domain problems are rejected before anything is
 // written.
-func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, fn func(req selectionReq, tc *TailnetConf, peers []string) error) {
+// updateTailnet is the shared body of the per-tailnet mutation endpoints.
+// needsLive marks handlers that validate against the live peer list
+// (select/forget): those still 404 on a parked tailnet. The config-only
+// handlers (domain/hostname/allow-all) proceed on a parked one — the config
+// entry is mutated and the next sync (or background busy retry) starts it.
+func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, needsLive bool, fn func(req selectionReq, tc *TailnetConf, peers []string) error) {
 	name := r.PathValue("name")
 	var req selectionReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -736,18 +824,25 @@ func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, fn func(r
 	tn := d.tailnetByName(name)
 	known := d.tailnetNames()
 	d.mu.Unlock()
+	var peers []string
 	if tn == nil {
-		msg := "no such tailnet (known: " + strings.Join(known, ", ") + ")"
-		if d.tailnetInConfig(name) {
-			msg = "tailnet is in the config but not running — `ts-multinet reload` retries it"
+		inConfig := d.tailnetInConfig(name)
+		if needsLive || !inConfig {
+			msg := "no such tailnet (known: " + strings.Join(known, ", ") + ")"
+			if inConfig {
+				msg = "tailnet is in the config but not running — `ts-multinet reload` retries it"
+			}
+			writeErr(w, http.StatusNotFound, msg)
+			return
 		}
-		writeErr(w, http.StatusNotFound, msg)
-		return
-	}
-	peers, err := d.peerShorts(r.Context(), tn)
-	if err != nil {
-		writeErr(w, http.StatusServiceUnavailable, "tailnet status unavailable: "+err.Error())
-		return
+		// parked, config-only mutation: peers stay nil; these handlers never
+		// look at them
+	} else {
+		var err error
+		if peers, err = d.peerShorts(r.Context(), tn); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "tailnet status unavailable: "+err.Error())
+			return
+		}
 	}
 	notice, err := d.applyConfigUpdate(func(c *Config) error {
 		tc := confByName(c, name)
@@ -775,7 +870,7 @@ func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, fn func(r
 // handleSelect adds a peer to the tailnet's resources. The peer must be a
 // live, non-Mullvad peer — the same names `peers` and selection use.
 func (d *Daemon) handleSelect(w http.ResponseWriter, r *http.Request) {
-	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+	d.updateTailnet(w, r, true, func(req selectionReq, tc *TailnetConf, peers []string) error {
 		if req.Peer == "" {
 			return clientError{"peer is required"}
 		}
@@ -792,7 +887,7 @@ func (d *Daemon) handleSelect(w http.ResponseWriter, r *http.Request) {
 // handleForget removes a peer from resources (any name — stale entries can
 // be cleaned up even when the peer is gone).
 func (d *Daemon) handleForget(w http.ResponseWriter, r *http.Request) {
-	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+	d.updateTailnet(w, r, true, func(req selectionReq, tc *TailnetConf, peers []string) error {
 		if req.Peer == "" {
 			return clientError{"peer is required"}
 		}
@@ -803,7 +898,7 @@ func (d *Daemon) handleForget(w http.ResponseWriter, r *http.Request) {
 
 // handleAllowAll toggles selecting every non-Mullvad peer.
 func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
-	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
 		if req.On == nil {
 			return clientError{"body must be {\"on\": true|false}"}
 		}
@@ -815,7 +910,7 @@ func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
 // handleDomain sets the tailnet's friendly DNS suffix (my-server.<domain>);
 // an empty string removes the override, falling back to the tailnet name.
 func (d *Daemon) handleDomain(w http.ResponseWriter, r *http.Request) {
-	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
 		if req.Domain != "" && !validDomain(req.Domain) {
 			return clientError{fmt.Sprintf("invalid domain %q: lowercase labels of [a-z0-9-], 1-63 chars each, 253 total", req.Domain)}
 		}
@@ -828,7 +923,7 @@ func (d *Daemon) handleDomain(w http.ResponseWriter, r *http.Request) {
 // ts-multinet-<slug>). Applying it restarts just that tailnet — node state
 // persists, so no new browser login.
 func (d *Daemon) handleHostname(w http.ResponseWriter, r *http.Request) {
-	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
 		if req.Hostname != "" && !validDomain(req.Hostname) {
 			return clientError{fmt.Sprintf("invalid hostname %q: lowercase labels of [a-z0-9-], 1-63 chars each", req.Hostname)}
 		}

@@ -228,6 +228,9 @@ func insertTailnetElement(arr *hujson.Array, tc TailnetConf) {
 	addMember("name", hujson.String(tc.Name))
 	addMember("cidr", hujson.String(tc.CIDR))
 	addMember("tun", hujson.String(tc.TUN))
+	if tc.Hostname != "" {
+		addMember("hostname", hujson.String(tc.Hostname))
+	}
 	if tc.Suffix != "" {
 		addMember("suffix", hujson.String(tc.Suffix))
 	}
