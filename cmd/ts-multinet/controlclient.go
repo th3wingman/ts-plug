@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -189,6 +190,125 @@ func runReloadClient(sock string) {
 		os.Exit(1)
 	}
 	fmt.Println(res["ok"])
+}
+
+// mutate posts one /tailnet/{name}/... mutation and returns the daemon's
+// error text, if any. Both the success and error replies are flat objects
+// ("ok"/"error"), so one decode covers both.
+func mutate(sock, path string, body any) error {
+	var res struct {
+		OK    string `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := controlPost(sock, path, body, &res); err != nil {
+		return err
+	}
+	if res.Error != "" {
+		return errors.New(res.Error)
+	}
+	return nil
+}
+
+// runSelectForgetClient drives select/forget: one POST per peer, stopping at
+// the first failure so a bad name doesn't get lost in the noise.
+func runSelectForgetClient(sock, tailnet, verb string, peers []string) {
+	if tailnet == "" || len(peers) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer> [peer...]\n", verb)
+		os.Exit(1)
+	}
+	for _, p := range peers {
+		if err := mutate(sock, "/tailnet/"+tailnet+"/"+verb, map[string]string{"peer": p}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("%s %s\n", verb, p)
+	}
+}
+
+// parseOnOff maps an optional on/off argument; absent means on.
+func parseOnOff(s string) (bool, error) {
+	switch strings.ToLower(s) {
+	case "", "on":
+		return true, nil
+	case "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("expected on or off, got %q", s)
+}
+
+func runAllowAllClient(sock, tailnet, arg string) {
+	if tailnet == "" {
+		fmt.Fprintln(os.Stderr, "usage: ts-multinet allow-all <tailnet> [on|off]")
+		os.Exit(1)
+	}
+	on, err := parseOnOff(arg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "allow-all: "+err.Error())
+		os.Exit(1)
+	}
+	if err := mutate(sock, "/tailnet/"+tailnet+"/allow-all", map[string]bool{"on": on}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if on {
+		fmt.Printf("allow-all %s on — every non-Mullvad peer selected\n", tailnet)
+	} else {
+		fmt.Printf("allow-all %s off\n", tailnet)
+	}
+}
+
+// runDomainClient sets a tailnet's friendly DNS suffix ("-" clears the
+// override); with no argument it prints the effective domain.
+func runDomainClient(sock, tailnet, arg string) {
+	if tailnet == "" {
+		fmt.Fprintln(os.Stderr, "usage: ts-multinet domain <tailnet> [name|-]")
+		os.Exit(1)
+	}
+	if arg == "" {
+		var cfg Config
+		if err := controlGet(sock, "/config", &cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		tc := confByName(&cfg, tailnet)
+		if tc == nil {
+			var known []string
+			for _, t := range cfg.Tailnets {
+				known = append(known, t.Name)
+			}
+			fmt.Fprintf(os.Stderr, "%s: no such tailnet (known: %s)\n", tailnet, strings.Join(known, ", "))
+			os.Exit(1)
+		}
+		fmt.Printf("%s: %s\n", tailnet, tc.domainName())
+		return
+	}
+	if arg == "-" {
+		arg = ""
+	}
+	if err := mutate(sock, "/tailnet/"+tailnet+"/domain", map[string]string{"domain": arg}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if arg == "" {
+		fmt.Printf("domain cleared for %s (back to the tailnet name)\n", tailnet)
+	} else {
+		fmt.Printf("domain set: %s.%s\n", "<peer>", arg)
+	}
+}
+
+// runConfigClient pretty-prints the daemon's effective config as-is.
+func runConfigClient(sock string) {
+	var raw json.RawMessage
+	if err := controlGet(sock, "/config", &raw); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(buf.String())
 }
 
 func truncate(s string, n int) string {

@@ -120,6 +120,32 @@ func main() {
 			runLoginClient(*flagSock, tailnet)
 		case "reload":
 			runReloadClient(*flagSock)
+		case "select", "forget":
+			if len(args) < 3 {
+				fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer> [peer...]\n", args[0])
+				os.Exit(1)
+			}
+			runSelectForgetClient(*flagSock, args[1], args[0], args[2:])
+		case "allow-all":
+			tailnet, arg := "", ""
+			if len(args) >= 2 {
+				tailnet = args[1]
+			}
+			if len(args) >= 3 {
+				arg = args[2]
+			}
+			runAllowAllClient(*flagSock, tailnet, arg)
+		case "domain":
+			tailnet, arg := "", ""
+			if len(args) >= 2 {
+				tailnet = args[1]
+			}
+			if len(args) >= 3 {
+				arg = args[2]
+			}
+			runDomainClient(*flagSock, tailnet, arg)
+		case "config":
+			runConfigClient(*flagSock)
 		default:
 			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", args[0])
 			usage()
@@ -225,8 +251,15 @@ usage:
   ts-multinet [flags] check <host[:port]>  diagnose one target end-to-end
   ts-multinet [flags] login [tailnet]  start browser login for a tailnet (or list what needs one)
   ts-multinet [flags] reload           re-read selection config and rewrite the hosts block
+  ts-multinet [flags] select <tailnet> <peer>...   expose peers on a tailnet
+  ts-multinet [flags] forget <tailnet> <peer>...   stop exposing peers
+  ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
+  ts-multinet [flags] domain <tailnet> [name|-]     set (or print) the friendly DNS suffix; - clears it
+  ts-multinet [flags] config                        print the effective config
 
-(status/peers/check/login/reload query the running daemon over its control socket.)
+(every verb above talks to the running daemon over its control socket; only a
+bare "ts-multinet" invocation runs the daemon itself. Structural changes —
+adding tailnets, editing cidr/tun — still need a config edit + restart.)
 
 flags:
 `)
