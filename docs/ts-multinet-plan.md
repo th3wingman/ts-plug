@@ -37,7 +37,9 @@ systemd restarts; daemon owns the config file but manual edits survive.
 | CLI | readable non-2xx errors (plain-text 404 no longer leaks json garbage); install script **restarts** a running daemon (`enable --now` never did) | `369e569` |
 | Races | `Close` waits for forwarder/watcher goroutines (stop/start TUNSETIFF EBUSY); `handlePeers` snapshots the tailnet list under the mutex (nil-panic) | `41009ac` |
 | Races | starts retry briefly-held TUN names (systemd restart overlap with the dying daemon) | `5cae8ac` |
+| Lifecycle | hostname kept on `add` (insert builder fix); stop cleans the tun route/addr before close; busy starts self-heal in the background (5–45s backoff); config-only mutations work on parked tailnets; sync start failures are a notice, not a 500 | `dc5b363` |
 | UX | parked tailnets (in config, not running) get "`reload` retries it" instead of "no such tailnet" | `110ad77` |
+| UX | short single-label domains (≤4 chars: dev, io, app…) warned at add, domain set, and start — they collide with public TLD space | `66041a4` |
 | Docs | plan status updates | `a837866` |
 | CLI | `--json` / `--details` flags on every command (raw replies, JSONL multi-peer, extended human forms); peers replies carry FQDN | `872c1c3` |
 | DNS hardening | routing domains set before the DNS server at registration; forwarder prefers real upstreams (`/run/systemd/resolve/resolv.conf`) over the resolved stub — no forwarding loop | `a593d09` |
@@ -104,20 +106,11 @@ Nothing — the CLI flags lane (`872c1c3`) and both DNS hardening pieces
 
 ## Pick up here (next session)
 
-0. **Queued behind the running worker** (EBUSY self-heal / add-with-hostname /
-   parked mutations — owns control.go, tailnet.go, configpatch.go):
-   - **short-domain TLD warning**: when a tailnet's effective domain is a
-     single label of ≤4 chars (dev, app, io, ai, sh, me, tv, so, to, co…),
-     warn — at `add` and `domain` set (append to the ok text so the UI shows
-     it), and once per start in the journal. Text: unknown names under it
-     still resolve publicly (fall-through), but names matching a peer's
-     short name shadow public domains. Helper + unit tests.
-   - **scale lane, shape depends on the user's answer**: corp has 2000+ peers
-     — (a) peers view: default cap + filter-first + no port-probing for big
-     tailnets; (b) if the user wants bulk exposure (allow-all): /24 synthetic
-     ranges cap at 254 hosts — manual wider `cidr` inside 198.18.0.0/15 works
-     today (/21 ≈ 2046); make the auto-picker size-aware. ASK: handful vs
-     bulk.
+0. **Scale lane, shape depends on the user's answer (ASK: handful vs bulk)**:
+   corp has 2000+ peers — (a) peers view: default cap + filter-first + no
+   port-probing for big tailnets; (b) if bulk exposure (allow-all): /24
+   synthetic ranges cap at 254 hosts — manual wider `cidr` inside
+   198.18.0.0/15 works today (/21 ≈ 2046); make the auto-picker size-aware.
 1. **Reinstall + verify on this host**: `sudo ./scripts/install-ts-multinet.sh`
    (restarts the daemon; all fixes land; msinfra should self-start via the
    TUN-retry). Then:
