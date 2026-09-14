@@ -33,6 +33,7 @@ type registry struct {
 
 type tnEntry struct {
 	name   string // friendly name, e.g. "skynet" — also accepted as an alias suffix
+	domain string // friendly DNS suffix, e.g. "skynet" or a custom "lan"; defaults to name
 	suffix string // real MagicDNS suffix, e.g. "tail523555.ts.net"; "" until detected
 	alloc  *allocator
 }
@@ -53,6 +54,7 @@ func newRegistry(tailnets []TailnetConf) (*registry, error) {
 		}
 		r.entries = append(r.entries, &tnEntry{
 			name:   strings.ToLower(tc.Name),
+			domain: strings.ToLower(tc.domainName()),
 			suffix: strings.TrimSuffix(strings.ToLower(tc.Suffix), "."),
 			alloc:  a,
 		})
@@ -77,6 +79,23 @@ func (r *registry) registerSuffix(tailnet, suffix string) {
 	}
 }
 
+// registerDomain updates the friendly DNS suffix (config domain edits land
+// here via the tailnet watcher's conf re-read).
+func (r *registry) registerDomain(tailnet, domain string) {
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	if domain == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.name == strings.ToLower(tailnet) {
+			e.domain = domain
+			return
+		}
+	}
+}
+
 // registerResolver wires a tailnet's peer-list resolver so DNS can verify a
 // host actually exists before answering (NXDOMAIN otherwise → search fallthrough).
 func (r *registry) registerResolver(tailnet string, fn resolveFunc) {
@@ -87,13 +106,35 @@ func (r *registry) registerResolver(tailnet string, fn resolveFunc) {
 
 // match resolves a queried name to its tailnet and canonical real FQDN. It
 // accepts the real MagicDNS suffix (host.tail523555.ts.net) and the friendly
-// alias (host.skynet -> host.tail523555.ts.net). Longest match wins.
+// aliases (host.skynet / host.<domain> -> host.tail523555.ts.net). Longest
+// match wins.
 func (r *registry) match(name string) (tailnet, realFQDN string, ok bool) {
 	name = strings.TrimSuffix(strings.ToLower(name), ".")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	bestLen := -1
+	// alias maps name under sfx (the tailnet name or its custom domain) to
+	// the canonical MagicDNS spelling.
+	alias := func(e *tnEntry, sfx string) {
+		if sfx == "" || e.suffix == "" {
+			return
+		}
+		if name != sfx && !strings.HasSuffix(name, "."+sfx) {
+			return
+		}
+		short := strings.TrimSuffix(name, "."+sfx)
+		if short == name { // name == sfx exactly
+			short = ""
+		}
+		real := e.suffix
+		if short != "" {
+			real = short + "." + e.suffix
+		}
+		if len(sfx) > bestLen {
+			bestLen, tailnet, realFQDN, ok = len(sfx), e.name, real, true
+		}
+	}
 	for _, e := range r.entries {
 		// Real suffix: the name is already canonical.
 		if e.suffix != "" && (name == e.suffix || strings.HasSuffix(name, "."+e.suffix)) {
@@ -101,19 +142,9 @@ func (r *registry) match(name string) (tailnet, realFQDN string, ok bool) {
 				bestLen, tailnet, realFQDN, ok = len(e.suffix), e.name, name, true
 			}
 		}
-		// Friendly alias: only once we know the real suffix to canonicalize to.
-		if e.suffix != "" && (name == e.name || strings.HasSuffix(name, "."+e.name)) {
-			short := strings.TrimSuffix(name, "."+e.name)
-			if short == name { // name == e.name exactly
-				short = ""
-			}
-			real := e.suffix
-			if short != "" {
-				real = short + "." + e.suffix
-			}
-			if len(e.name) > bestLen {
-				bestLen, tailnet, realFQDN, ok = len(e.name), e.name, real, true
-			}
+		alias(e, e.name)
+		if e.domain != e.name {
+			alias(e, e.domain)
 		}
 	}
 	return tailnet, realFQDN, ok
@@ -310,10 +341,16 @@ func startDNS(listen string, ds *dnsServer) error {
 	if listen == "" {
 		listen = "127.0.0.1:53"
 	}
-	srv := &dns.Server{Addr: listen, Net: "udp", Handler: ds}
+	// Bind synchronously so a conflict (e.g. dnsmasq on 127.0.0.1:53) reaches
+	// the caller; ListenAndServe-in-a-goroutine would only log it on the side.
+	conn, err := net.ListenPacket("udp", listen)
+	if err != nil {
+		return err
+	}
+	srv := &dns.Server{PacketConn: conn, Handler: ds}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			slog.Error("dns ListenAndServe", "err", err)
+		if err := srv.ActivateAndServe(); err != nil {
+			slog.Error("dns serve", "err", err)
 		}
 	}()
 	return nil
