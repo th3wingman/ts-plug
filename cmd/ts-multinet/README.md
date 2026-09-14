@@ -2,11 +2,37 @@
 
 Run several tailnets transparently on one host at the same time.
 
-`tailscaled` gives the whole OS one tailnet. `ts-multinet` gives it *several* —
-no `ip rule`, no `iptables`, no profile switching. Each tailnet is a stock
-userspace **tsnet** node; in front of each we run a small gVisor TCP/IP stack on
-its own TUN device (tun2socks style) and re-dial every connection out through
-that tailnet.
+## Why you want this (the short version)
+
+**The problem:** your machine can only be in one tailnet at a time. Need to
+reach a host on skynet and then a host on corp? You switch profiles back and
+forth, all day. That sucks.
+
+**ts-multinet fixes that.** It connects to *all* your tailnets at once and
+writes the hosts you care about into `/etc/hosts`. After that, from any app,
+at the same time:
+
+```sh
+ssh nucbox.skynet            # tailnet 1
+curl http://zombie.msinfra    # tailnet 2
+ping rpi4-sk-01.corp         # tailnet 3
+```
+
+No profile switching. No auth keys to rotate. Your normal `tailscaled` (if
+you run one) keeps working untouched.
+
+**Getting there is three steps, once:**
+
+```sh
+sudo scripts/install-ts-multinet.sh   # installs + starts the daemon
+sudo ts-multinet login skynet          # prints a link; open it, log in — forever
+sudo ts-multinet login corp            # …once per tailnet
+```
+
+Then say which hosts you want (in `/etc/ts-multinet/config.json`, one line per
+host), run `sudo ts-multinet reload`, and the names work everywhere. See
+**[Install](#install)** below for the details, or
+`sudo ts-multinet peers` to browse what's out there before deciding.
 
 > **Status: MVP.** Linux. Runs directly on the host (recommended) or inside a
 > container network namespace. TCP, UDP, and ICMP-echo work. Nodes are
@@ -17,6 +43,10 @@ that tailnet.
 > (code map, gotchas, roadmap), see **[docs/ts-multinet.md](../../docs/ts-multinet.md)**.
 
 ## How it works
+
+Each tailnet is a stock userspace **tsnet** node; in front of each we run a
+small gVisor TCP/IP stack on its own TUN device (tun2socks style) and re-dial
+every connection out through that tailnet.
 
 ```
 curl https://host.skynet.ts.net
@@ -46,7 +76,9 @@ to dial. No L3 NAT, no real-tailnet-IP bookkeeping — tsnet resolves the name.
 
 ## Config
 
-`config.example.json`:
+The config says which tailnets you have and which hosts on them you want
+reachable. `resources` lists hosts by their short name — exactly what
+`ts-multinet peers` shows. `config.example.json`:
 
 ```json
 {
