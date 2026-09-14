@@ -22,18 +22,19 @@ const udpIdle = 60 * time.Second
 // setupUDP installs the UDP forwarder. It fires once per 4-tuple (subsequent
 // datagrams for an established flow bypass it), so each call starts one relay.
 func (f *forwarder) setupUDP() {
-	fwd := udp.NewForwarder(f.stack, func(req *udp.ForwarderRequest) {
+	fwd := udp.NewForwarder(f.stack, func(req *udp.ForwarderRequest) (handled bool) {
 		id := req.ID()
 		host, ok := f.reg.lookup(net.IP(id.LocalAddress.AsSlice()))
 		if !ok {
-			return // unknown synthetic dst; drop (no RST for UDP)
+			return false // unknown synthetic dst: unhandled, stack may send ICMP unreachable
 		}
 		var wq waiter.Queue
 		ep, err := req.CreateEndpoint(&wq)
 		if err != nil {
-			return
+			return false
 		}
 		go f.relayUDP(gonet.NewUDPConn(&wq, ep), host, id.LocalPort)
+		return true
 	})
 	f.stack.SetTransportProtocolHandler(udp.ProtocolNumber, fwd.HandlePacket)
 }
