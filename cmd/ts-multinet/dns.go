@@ -163,8 +163,11 @@ func (r *registry) registerResolver(tailnet string, fn resolveFunc) {
 // match resolves a queried name to its tailnet and canonical real FQDN. It
 // accepts the real MagicDNS suffix (host.tail523555.ts.net) and the friendly
 // aliases (host.skynet / host.<domain> -> host.tail523555.ts.net). Longest
-// match wins.
-func (r *registry) match(name string) (tailnet, realFQDN string, ok bool) {
+// match wins. authoritative reports whether the match was the real MagicDNS
+// suffix (our namespace — unknown hosts are NXDOMAIN) or a friendly alias
+// (host.<name/domain> — unknown hosts fall through to the public upstream,
+// since an alias like "dev" is also a real public TLD).
+func (r *registry) match(name string) (tailnet, realFQDN string, authoritative, ok bool) {
 	name = strings.TrimSuffix(strings.ToLower(name), ".")
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -188,14 +191,14 @@ func (r *registry) match(name string) (tailnet, realFQDN string, ok bool) {
 			real = short + "." + e.suffix
 		}
 		if len(sfx) > bestLen {
-			bestLen, tailnet, realFQDN, ok = len(sfx), e.name, real, true
+			bestLen, tailnet, realFQDN, authoritative, ok = len(sfx), e.name, real, false, true
 		}
 	}
 	for _, e := range r.entries {
 		// Real suffix: the name is already canonical.
 		if e.suffix != "" && (name == e.suffix || strings.HasSuffix(name, "."+e.suffix)) {
 			if len(e.suffix) > bestLen {
-				bestLen, tailnet, realFQDN, ok = len(e.suffix), e.name, name, true
+				bestLen, tailnet, realFQDN, authoritative, ok = len(e.suffix), e.name, name, true, true
 			}
 		}
 		alias(e, e.name)
@@ -203,7 +206,7 @@ func (r *registry) match(name string) (tailnet, realFQDN string, ok bool) {
 			alias(e, e.domain)
 		}
 	}
-	return tailnet, realFQDN, ok
+	return tailnet, realFQDN, authoritative, ok
 }
 
 // exists checks whether realFQDN is a real peer on the tailnet. If no resolver
@@ -224,7 +227,7 @@ func (r *registry) exists(ctx context.Context, tailnet, realFQDN string) bool {
 // gets the raw arg with no search-list expansion). Bare names are tried against
 // each tailnet in config order; first existing wins.
 func (r *registry) locate(ctx context.Context, name string) (tailnet, realFQDN string, ok bool) {
-	if t, real, m := r.match(name); m {
+	if t, real, _, m := r.match(name); m {
 		if r.exists(ctx, t, real) {
 			return t, real, true
 		}
@@ -356,33 +359,39 @@ func (d *dnsServer) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 	q := req.Question[0]
 
-	if tailnet, realFQDN, mine := d.reg.match(q.Name); mine {
-		m := new(dns.Msg)
-		m.SetReply(req)
-		m.Authoritative = true
-
-		// Only answer if the host is a real peer. NXDOMAIN otherwise, so a
-		// resolver walking its search list falls through to the next tailnet.
+	if tailnet, realFQDN, auth, mine := d.reg.match(q.Name); mine {
+		// Only answer if the host is a real peer. A miss under the real
+		// MagicDNS suffix is NXDOMAIN (our namespace); a miss under a friendly
+		// alias (host.<name/domain>) falls through to the public upstream — an
+		// alias like "dev" is also a real gTLD, and pi.dev must keep resolving.
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if !d.reg.exists(ctx, tailnet, realFQDN) {
-			m.Rcode = dns.RcodeNameError // NXDOMAIN
+			if auth {
+				m := new(dns.Msg)
+				m.SetReply(req)
+				m.Authoritative = true
+				m.Rcode = dns.RcodeNameError
+				_ = w.WriteMsg(m)
+				return
+			}
+		} else {
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.Authoritative = true
+			// A is synthesized; AAAA (and anything else) returns empty NOERROR so
+			// resolvers fall back to the A record.
+			if q.Qtype == dns.TypeA {
+				if ip, ok := d.reg.allocate(tailnet, realFQDN); ok {
+					rr, err := dns.NewRR(fmt.Sprintf("%s 1 IN A %s", q.Name, ip.String()))
+					if err == nil {
+						m.Answer = append(m.Answer, rr)
+					}
+				}
+			}
 			_ = w.WriteMsg(m)
 			return
 		}
-
-		// A is synthesized; AAAA (and anything else) returns empty NOERROR so
-		// resolvers fall back to the A record.
-		if q.Qtype == dns.TypeA {
-			if ip, ok := d.reg.allocate(tailnet, realFQDN); ok {
-				rr, err := dns.NewRR(fmt.Sprintf("%s 1 IN A %s", q.Name, ip.String()))
-				if err == nil {
-					m.Answer = append(m.Answer, rr)
-				}
-			}
-		}
-		_ = w.WriteMsg(m)
-		return
 	}
 
 	resp, _, err := d.client.Exchange(req, d.upstream)

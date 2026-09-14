@@ -152,7 +152,7 @@ func TestRemoveTailnetEndpointTearsDown(t *testing.T) {
 	waitStopped(t, stub, "dev")
 
 	// the registry forgot dev: no alias match, no synthetic allocation
-	if _, _, ok := d.reg.match("my-server.dev"); ok {
+	if _, _, _, ok := d.reg.match("my-server.dev"); ok {
 		t.Fatal("registry still matches the removed tailnet's alias")
 	}
 	if _, ok := d.reg.allocate("dev", "my-server.tailx.ts.net"); ok {

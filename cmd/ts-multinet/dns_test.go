@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -43,13 +44,16 @@ func newDomainTestReg(t *testing.T) *registry {
 func TestMatchDomainAndNameAliases(t *testing.T) {
 	reg := newDomainTestReg(t)
 
-	tn, fqdn, ok := reg.match("my-server.lan.")
-	if !ok || tn != "skynet" || fqdn != "my-server.tail523555.ts.net" {
-		t.Fatalf("domain alias: %q %q %v", tn, fqdn, ok)
+	tn, fqdn, auth, ok := reg.match("my-server.lan.")
+	if !ok || tn != "skynet" || fqdn != "my-server.tail523555.ts.net" || auth {
+		t.Fatalf("domain alias: %q %q auth=%v %v", tn, fqdn, auth, ok)
 	}
-	tn2, fqdn2, ok := reg.match("my-server.skynet.")
-	if !ok || tn2 != "skynet" || fqdn2 != "my-server.tail523555.ts.net" {
-		t.Fatalf("name alias: %q %q %v", tn2, fqdn2, ok)
+	tn2, fqdn2, auth2, ok := reg.match("my-server.skynet.")
+	if !ok || tn2 != "skynet" || fqdn2 != "my-server.tail523555.ts.net" || auth2 {
+		t.Fatalf("name alias: %q %q auth=%v %v", tn2, fqdn2, auth2, ok)
+	}
+	if _, _, auth3, ok := reg.match("my-server.tail523555.ts.net."); !ok || !auth3 {
+		t.Fatalf("suffix match should be authoritative: %v", ok)
 	}
 	// both spellings share one synthetic IP
 	ip1, _ := reg.allocate(tn, fqdn)
@@ -60,17 +64,35 @@ func TestMatchDomainAndNameAliases(t *testing.T) {
 
 	// runtime domain change lands via registerDomain
 	reg.registerDomain("skynet", "corp")
-	if _, _, ok := reg.match("my-server.lan."); ok {
+	if _, _, _, ok := reg.match("my-server.lan."); ok {
 		t.Fatal("old domain still matches after registerDomain")
 	}
-	if _, _, ok := reg.match("my-server.corp."); !ok {
+	if _, _, _, ok := reg.match("my-server.corp."); !ok {
 		t.Fatal("new domain does not match after registerDomain")
 	}
 }
 
 func TestServeDNSDomainForms(t *testing.T) {
 	reg := newDomainTestReg(t)
-	ds := &dnsServer{reg: reg, upstream: "1.1.1.1:53"}
+
+	// local upstream stub: an alias miss must be forwarded there, not NXDOMAINed
+	up := make(chan *dns.Msg, 1)
+	stub := &dns.Server{Addr: "127.0.0.1:0", Net: "udp", Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeSuccess
+		up <- m
+		_ = w.WriteMsg(m)
+	})}
+	go stub.ListenAndServe()
+	defer stub.Shutdown()
+	for range 100 {
+		if stub.PacketConn != nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	ds := &dnsServer{reg: reg, upstream: stub.PacketConn.LocalAddr().String()}
 
 	query := func(name string, qtype uint16) *dns.Msg {
 		rec := &recorder{}
@@ -93,9 +115,22 @@ func TestServeDNSDomainForms(t *testing.T) {
 		t.Fatalf("domain and suffix spellings differ: %s vs %s", ipA, ipB)
 	}
 
-	// unknown host under a known domain: NXDOMAIN so resolvers fall through
-	if m := query("ghost.lan.", dns.TypeA); m == nil || m.Rcode != dns.RcodeNameError {
-		t.Fatalf("ghost.lan: expected NXDOMAIN, got %+v", m)
+	// unknown host under a friendly alias falls through to the public upstream
+	// — a domain like "dev" is also a real gTLD, so pi.dev must keep resolving
+	m := query("ghost.lan.", dns.TypeA)
+	if m == nil || m.Rcode != dns.RcodeSuccess {
+		t.Fatalf("ghost.lan: expected forwarded answer, got %+v", m)
+	}
+	select {
+	case <-up:
+	default:
+		t.Fatal("alias miss was not forwarded to the upstream")
+	}
+
+	// unknown host under the real MagicDNS suffix is still NXDOMAIN — that
+	// namespace is ours alone
+	if m := query("ghost.tail523555.ts.net.", dns.TypeA); m == nil || m.Rcode != dns.RcodeNameError {
+		t.Fatalf("ghost.tail523555.ts.net: expected NXDOMAIN, got %+v", m)
 	}
 }
 
