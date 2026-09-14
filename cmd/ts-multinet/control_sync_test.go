@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -332,6 +333,34 @@ func TestStartFailureStaysInConfigAndSelfHeals(t *testing.T) {
 	}
 	if len(d.liveTailnets()) != 2 {
 		t.Fatalf("corp was not self-healed by a later config change: %d running", len(d.liveTailnets()))
+	}
+}
+
+// A briefly-held TUN name (restart overlap, sibling stop/start in one sync)
+// is retried in-line instead of parking the tailnet until the next change.
+func TestSyncRetriesBusyTUN(t *testing.T) {
+	d, cfgPath, _ := syncDaemon(t)
+
+	var attempts int
+	origStarter := d.rt.starter
+	d.rt.starter = func(ctx context.Context, tc TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error) {
+		attempts++
+		if attempts <= 2 {
+			return nil, fmt.Errorf("TUNSETIFF %q: device or resource busy", tc.TUN)
+		}
+		return origStarter(ctx, tc, reg, mtu, baseDir, onRunning, rs)
+	}
+	if _, err := d.applyConfigUpdate(func(c *Config) error {
+		c.Tailnets = append(c.Tailnets, TailnetConf{Name: "corp", CIDR: "198.18.2.0/24", TUN: "tsm1"})
+		return nil
+	}); err != nil {
+		t.Fatalf("busy TUN should have been retried, got: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+	if confByName(mustLoad(t, cfgPath), "corp") == nil || len(d.liveTailnets()) != 2 {
+		t.Fatal("corp should be in config and running after the retries")
 	}
 }
 

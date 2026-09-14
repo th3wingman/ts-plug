@@ -135,7 +135,7 @@ func (d *Daemon) syncTailnets(cfg *Config) error {
 			continue
 		}
 		slog.Info("tailnet starting", "name", tc.Name, "tun", tc.TUN, "cidr", tc.CIDR)
-		tn, err := d.rt.starter(d.rt.ctx, tc, d.reg, d.rt.mtu, d.rt.baseDir, d.applySelections, d.rt.rs)
+		tn, err := startWithTUNRetry(d.rt.starter, d.rt.ctx, tc, d.reg, d.rt.mtu, d.rt.baseDir, d.applySelections, d.rt.rs)
 		if err != nil {
 			d.reg.remove(tc.Name)
 			startErrs = append(startErrs, fmt.Sprintf("%s: %v", tc.Name, err))
@@ -151,6 +151,22 @@ func (d *Daemon) syncTailnets(cfg *Config) error {
 		return fmt.Errorf("tailnets in config but not started (retried on every config change and `reload`): %s", strings.Join(startErrs, "; "))
 	}
 	return nil
+}
+
+// startWithTUNRetry retries a start whose TUN name is briefly held: the
+// predecessor process during a systemd restart (or a just-stopped sibling in
+// the same sync) can keep the interface for a moment while it unwinds.
+// Retrying only the busy error is safe — openTUN fails before any resource
+// exists, so a re-attempt has no side effects to clean up.
+func startWithTUNRetry(starter func(context.Context, TailnetConf, *registry, uint32, string, func(), *resolvedSync) (*Tailnet, error), ctx context.Context, tc TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error) {
+	for try := 0; ; try++ {
+		tn, err := starter(ctx, tc, reg, mtu, baseDir, onRunning, rs)
+		if err == nil || try >= 2 || !strings.Contains(err.Error(), "device or resource busy") {
+			return tn, err
+		}
+		slog.Warn("tun name busy, retrying", "name", tc.Name, "tun", tc.TUN, "attempt", try+1)
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // stopTailnet tears one tailnet down: out of the list, resolved reverted
