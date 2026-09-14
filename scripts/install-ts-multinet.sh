@@ -8,6 +8,11 @@
 #   sudo ${EDITOR:-nano} /etc/ts-multinet/config.json   # tailnets + resources
 #   sudo systemctl restart ts-multinet
 #   sudo ts-multinet login skynet                     # once per tailnet, forever
+#   sudo ts-multinet select skynet nucbox             # expose peers (or the web UI)
+#
+# Host DNS is automatic on systemd-resolved hosts (per-TUN routing domains);
+# without resolved, selected names still resolve via the /etc/hosts block.
+# The web UI listens on http://127.0.0.1:8123 (config: ui_listen).
 #
 # No authkeys: the daemon uses persistent node state + browser login, so this
 # script has no key handling. Existing config and state are never overwritten.
@@ -146,6 +151,11 @@ EOF
 systemctl daemon-reload
 systemctl enable --now ts-multinet
 
+if ! command -v resolvectl >/dev/null 2>&1 || [ ! -d /run/systemd/resolve ]; then
+    echo "note: systemd-resolved not detected — host DNS will be skipped;"
+    echo "      selected names still resolve via the /etc/hosts block"
+fi
+
 echo
 echo "installed:"
 echo "  $BINDIR/ts-multinet"
@@ -153,8 +163,10 @@ echo "  $SYSCONF"
 echo "  $UNIT  (enabled, running)"
 echo
 echo "next steps:"
-echo "  1. sudo ${EDITOR:-nano} $SYSCONF            # tailnets, cidrs, resources"
+echo "  1. sudo ${EDITOR:-nano} $SYSCONF            # tailnets, cidrs"
 echo "  2. sudo systemctl restart ts-multinet"
 echo "  3. sudo ts-multinet login <tailnet>        # once per tailnet — browser URL"
-echo "  4. sudo ts-multinet status                 # states + selections"
+echo "  4. sudo ts-multinet select <tailnet> <peer>...   # expose peers (or: forget, allow-all, domain)"
+echo "  5. http://127.0.0.1:8123                   # web UI: dashboard, selection, logins, reload"
+echo "     sudo ts-multinet status                 # states + selections"
 echo "     journalctl -u ts-multinet -f            # watch it come up"

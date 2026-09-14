@@ -9,8 +9,9 @@ reach a host on skynet and then a host on corp? You switch profiles back and
 forth, all day. That sucks.
 
 **ts-multinet fixes that.** It connects to *all* your tailnets at once and
-writes the hosts you care about into `/etc/hosts`. After that, from any app,
-at the same time:
+makes the hosts you care about reachable by name from anywhere on the
+machine — through system DNS (systemd-resolved) with the `/etc/hosts` block
+as a fallback. After that, from any app, at the same time:
 
 ```sh
 ssh nucbox.skynet            # tailnet 1
@@ -29,15 +30,15 @@ sudo ts-multinet login skynet          # prints a link; open it, log in — fore
 sudo ts-multinet login corp            # …once per tailnet
 ```
 
-Then say which hosts you want (in `/etc/ts-multinet/config.json`, one line per
-host), run `sudo ts-multinet reload`, and the names work everywhere. See
+Then say which hosts you want — `sudo ts-multinet select <tailnet> <host>`,
+the web UI, or a config edit — and the names work everywhere. See
 **[Install](#install)** below for the details, or
 `sudo ts-multinet peers` to browse what's out there before deciding.
 
 > **Status: MVP.** Linux. Runs directly on the host (recommended) or inside a
 > container network namespace. TCP, UDP, and ICMP-echo work. Nodes are
-> persistent with one-time browser login; selected resources land in
-> `/etc/hosts`.
+> persistent with one-time browser login; selected resources resolve via
+> system DNS (or `/etc/hosts`) and are managed from the CLI or a local web UI.
 >
 > For architecture, the full `tailscaled` comparison, and continuation notes
 > (code map, gotchas, roadmap), see **[docs/ts-multinet.md](../../docs/ts-multinet.md)**.
@@ -86,9 +87,10 @@ reachable. `resources` lists hosts by their short name — exactly what
   "state_dir": "/var/lib/ts-multinet",
   "tailnets": [
     {
-      "name": "example",              // short id: `login`/`peers`/`reload <name>`
+      "name": "example",              // short id: `login`/`peers`/`select <name> ...`
       "cidr": "198.18.1.0/24",        // synthetic range, unique per tailnet
       "tun": "tsm0",                   // <= 15 chars
+      // "domain": "example",               // friendly DNS suffix (default: the name)
       // "resources": ["host1", "host2"],  // short names as `peers` shows them
       // "allow_all": true,                // or: every peer (Mullvad exits never)
     },
@@ -97,7 +99,12 @@ reachable. `resources` lists hosts by their short name — exactly what
 ```
 
 The example documents every optional key (mtu, dns_listen, upstream_dns,
-hosts_file, suffix, enabled) inline with its default.
+hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
+
+- **The daemon owns the config file.** `select`/`forget`/`allow-all`/`domain`
+  (CLI and web UI) patch it in place — comments and formatting survive.
+  Manual edits still work: edit, then `sudo ts-multinet reload`. Structural
+  changes (adding tailnets, cidr/tun) need a service restart.
 
 - **No authkeys.** Each tailnet is a persistent node: log it in once with
   `ts-multinet login <tailnet>` (prints a browser URL); state persists under
@@ -125,6 +132,44 @@ hosts_file, suffix, enabled) inline with its default.
 - `tun` names must be ≤15 chars (kernel `IFNAMSIZ`).
 - Non-tailnet DNS is forwarded to the upstream inherited from the original
   `/etc/resolv.conf` (override with `"upstream_dns"`).
+- **Custom domains** — each tailnet's `domain` (default: its `name`) is a
+  friendly suffix: both `my-server.skynet` and
+  `my-server.tail84a2fd.ts.net` resolve to the same synthetic IP, locally.
+
+## Web UI
+
+The daemon serves a small control panel at **http://127.0.0.1:8123** (knob:
+`ui_listen`) — same API the CLI talks to, rendered for a browser:
+
+- per-tailnet cards: state, suffix, custom domain, login button (clickable
+  auth URL), allow-all toggle
+- peers tables with select checkboxes and probed services
+- effective config view, reload button
+
+It binds on localhost only, no auth: same trust model as the unix control
+socket (root-owned, local-only). Manage remotely over SSH port-forwarding.
+
+## Host DNS (systemd-resolved)
+
+On hosts running systemd-resolved, the daemon registers its built-in DNS
+responder per TUN — `resolvectl dns tsm0 127.0.0.1` + routing domains for
+the MagicDNS suffix and the custom domain (the same pattern `tailscaled`
+uses) — so tailnet names resolve system-wide while everything else keeps its
+normal resolvers. It coexists with a regular `tailscaled` (synthetic ranges
+never overlap `100.64.0.0/10`; your `tailscale0` link config is untouched).
+
+Two fallbacks keep it non-fatal:
+
+- **no systemd-resolved** (or not on Linux-with-resolved): registration is
+  skipped with a warning; selected names still resolve via the `/etc/hosts`
+  block.
+- **`127.0.0.1:53` already held** (dnsmasq, NetworkManager): the daemon logs
+  a warning and continues hosts-block-only. Move the listener with
+  `"dns_listen": "127.0.0.1:5353"` — resolved accepts nonstandard ports for
+  per-link DNS, so registration then uses `127.0.0.1:5353`.
+
+Every selected resource still gets its `/etc/hosts` line too — the two paths
+always agree, pointing at the same synthetic IP.
 
 ## Install
 
@@ -176,8 +221,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ts-multinet
 journalctl -u ts-multinet -f           # watch the tailnets come up
 ```
 
-Selection changes: edit the config, then `sudo ts-multinet reload` (or
-`sudo systemctl kill -s HUP ts-multinet`). Structural changes (adding a
+Selection changes: `sudo ts-multinet select/forget <tailnet> <peer>...`
+(patches the config in place and applies immediately — no reload needed),
+`sudo ts-multinet reload`, or the web UI. Structural changes (adding a
 tailnet, changing `cidr`/`tun`) need a service restart.
 
 ## Run (host)
@@ -192,8 +238,8 @@ sudo ts-multinet login msinfra
 sudo ts-multinet status           # states, assigned IPs, selections per tailnet
 ```
 
-On the host the daemon **never touches system DNS** — selected resources
-resolve via the `/etc/hosts` block, and it coexists with your regular
+On the host the daemon never hijacks system DNS: it registers per-TUN with
+systemd-resolved (see **Host DNS** above) and coexists with your regular
 `tailscaled` (synthetic ranges never overlap `100.64.0.0/10`).
 
 ## Run (container)
@@ -211,7 +257,8 @@ docker exec tsm ts-multinet login skynet   # one-time; state persists in the vol
 ```
 
 Inside the container resolv.conf points at the built-in responder (as before),
-so every peer resolves, selected or not.
+with the per-tailnet custom domains in the `search` list, so every peer
+resolves — selected or not — and bare short names expand.
 
 Then, in another shell, exercise both tailnets transparently:
 
@@ -236,6 +283,11 @@ docker exec tsm ts-multinet peers rpi4          # name filter
 docker exec tsm -ports 22,5432,3000 ts-multinet peers db
 docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
 docker exec tsm ts-multinet reload              # after editing selection config
+sudo ts-multinet select skynet rpi4-sk-01       # expose a peer (patches the config in place)
+sudo ts-multinet forget skynet rpi4-sk-01       # stop exposing it
+sudo ts-multinet allow-all corp on              # every non-Mullvad peer
+sudo ts-multinet domain corp                    # print the friendly suffix (set: domain corp <name>)
+sudo ts-multinet config                         # effective config, as the daemon sees it
 ```
 
 ```
@@ -269,8 +321,7 @@ synthetic-range traffic correctly instead of bouncing off the container's eth0.
 
 - **Name-based only.** Connecting to a literal `100.x` tailnet IP isn't steered
   — that's the overlapping-CGNAT case the synthetic ranges exist to avoid.
-- **Host mode resolves selected resources via /etc/hosts.** Bare short names
-  (`ping nucbox`) don't expand on the host — use the alias form
-  (`nucbox.skynet`). Proper host DNS (responder registered with
-  systemd-resolved) is on the roadmap.
+- **Bare short names on the host** (`ping nucbox`) don't expand outside the
+  container — use the alias form (`nucbox.skynet`), which resolves system-wide
+  via systemd-resolved (or `/etc/hosts` without it).
 - **IPv4 synthetic only.** AAAA queries return empty so clients fall back to A.

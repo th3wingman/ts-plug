@@ -5,8 +5,11 @@
 //   2. sudo systemctl restart ts-multinet
 //   3. sudo ts-multinet login <name>      # once per tailnet; prints a browser URL
 //   4. sudo ts-multinet peers <name>      # short names of that tailnet's peers
-//   5. fill in "resources" with the short names you want reachable, then
-//      sudo ts-multinet reload
+//   5. sudo ts-multinet select <name> <peer>...   # expose them (or use the web UI)
+//
+// The daemon owns this file: select/forget/allow-all/domain (CLI and web UI)
+// patch it in place and your comments survive. Manual edits work too — just
+// `sudo ts-multinet reload` afterwards.
 //
 // No authkeys: node state under state_dir persists, so login is once, in the
 // browser, forever.
@@ -20,6 +23,7 @@
   // "dns_listen": "127.0.0.1:53",
   // "upstream_dns": "1.1.1.1",        // non-tailnet names; default: first nameserver in /etc/resolv.conf
   // "hosts_file": "/etc/hosts",
+  // "ui_listen": "127.0.0.1:8123",    // web UI (localhost-only, no auth): dashboard, peer selection, logins
 
   "tailnets": [
     {
@@ -36,10 +40,13 @@
 
       // optional per tailnet:
       // "suffix": "example.ts.net",          // MagicDNS suffix; auto-detected when omitted
+      // "domain": "example",                 // friendly DNS suffix (default: the tailnet name);
+      //                                          // my-server.example and my-server.example.ts.net both resolve
       // "enabled": false,                    // default true; false skips this tailnet
       // "allow_all": true,                   // select every peer instead of listing resources
       //                                      // (shared Mullvad exit nodes are never selectable)
-      // "resources": ["host1", "host2"],     // short names exactly as `peers` shows them
+      // "resources": ["host1", "host2"],     // short names exactly as `peers` shows them;
+      //                                      // usually managed via `select`/`forget` or the web UI
     },
   ]
 }

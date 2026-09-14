@@ -2,7 +2,8 @@
 
 > **Status: MVP.** Linux. Runs directly on the host or in a container netns.
 > Verified live across three tailnets (TCP, UDP, ICMP). Host mode: persistent
-> browser-login nodes, selected resources, `/etc/hosts` managed block. See
+> browser-login nodes, selected resources, systemd-resolved host DNS with an
+> `/etc/hosts` fallback, select/forget CLI + web UI. See
 > [`cmd/ts-multinet/README.md`](../cmd/ts-multinet/README.md) for the quickstart.
 
 `ts-multinet` runs **several tailnets transparently on one host at the same
@@ -59,8 +60,8 @@ Three forms all resolve to the same host:
 | Form | Example | How |
 |---|---|---|
 | Full MagicDNS FQDN | `rpi4-sk-01.tail523555.ts.net` | real suffix match |
-| Friendly alias | `rpi4-sk-01.skynet` | config `name` accepted as an alias suffix, canonicalized to the real FQDN |
-| Bare hostname | `rpi4-sk-01` | resolv.conf `search <names>` expands it; tried against each tailnet |
+| Friendly alias | `rpi4-sk-01.skynet` | the tailnet's `domain` (default: its `name`) accepted as an alias suffix, canonicalized to the real FQDN |
+| Bare hostname | `rpi4-sk-01` | resolv.conf `search <names>` expands it; tried against each tailnet (containers) |
 
 The responder is **existence-aware**: it only answers if the host is a real peer
 on that tailnet (checked via the peer list), and returns **NXDOMAIN** otherwise.
@@ -70,13 +71,37 @@ actually has the host. Bare names that collide across tailnets resolve in config
 order. `check` does the same expansion itself (it gets the raw arg, no libc
 search), via `registry.locate`.
 
+### Host DNS (systemd-resolved)
+
+Synthetic IPs are allocated on first query, keyed on the **real FQDN** — both
+alias spellings (`host.<domain>` and `host.<suffix>`) canonicalize to the same
+FQDN and therefore the same synthetic IP, so DNS, `/etc/hosts`, and the
+forwarder's reverse lookup always agree.
+
+On the host (not in containers), `resolved.go` hands each TUN to
+systemd-resolved the way `tailscaled` does: `resolvectl dns <tun> 127.0.0.1` +
+routing domains `~<suffix>` and `~<domain>`. Everything else on the host keeps
+its normal resolvers; a coexisting `tailscaled` and its `tailscale0` link config
+are untouched. Registration is idempotent (change-detected via the tailnet
+watcher, so `domain` edits land within one poll tick) and reverted on shutdown.
+
+Degrade paths (both warn, never fatal): no systemd-resolved → registration
+skipped, `/etc/hosts` block is the only resolution path; `127.0.0.1:53` already
+bound → same, and `dns_listen` can move the responder (resolved accepts
+`host:port` for per-link DNS).
+
 ### Control plane
 
 The daemon serves a JSON API over a unix socket
-(`/run/ts-multinet/control.sock`). `status` / `peers` / `check` / `login` /
-`reload` are thin clients that query the **running daemon** — they never spin up
-their own tsnet stacks (which would collide on state locks, `:53`, and
-authkeys). Run them with `docker exec <container> ts-multinet <cmd>`, or
+(`/run/ts-multinet/control.sock`) and, on the host, the same API + an embedded
+web UI on a localhost TCP listener (default `127.0.0.1:8123`, knob
+`ui_listen`). `status` / `peers` / `check` / `login` / `reload` /
+`select` / `forget` / `allow-all` / `domain` / `config` are thin clients that
+query the **running daemon** — they never spin up their own tsnet stacks
+(which would collide on state locks, `:53`, and authkeys). The mutating verbs
+patch the config file in place via the hujson AST (`configpatch.go`), so
+comments survive, then swap the in-memory confs and re-apply selections.
+Run them with `docker exec <container> ts-multinet <cmd>`, or
 `sudo ts-multinet <cmd>` on the host.
 
 ## ts-multinet vs a full `tailscaled` client
@@ -133,11 +158,14 @@ Everything a fresh session needs to pick this up.
   config + subcommand dispatch), `tailnet.go` (per-tailnet bring-up, status
   watcher, resolver, pinger, assigned-IP-on-TUN), `forwarder.go` (gVisor stack,
   TCP forwarder, ICMP interception, packet pump), `udp.go`, `icmp.go`, `dns.go`
-  (responder + synthetic-IP registry + allocator), `selection.go` (selection
-  resolution, identity pins, Mullvad filter), `hosts.go` (/etc/hosts managed
-  block), `control.go` (daemon registry + unix socket server),
-  `controlclient.go` (CLI clients + formatting), `tun_linux.go` (raw TUN via
-  ioctl + `ip` helpers).
+  (responder + synthetic-IP registry + allocator), `resolved.go` (per-TUN
+  systemd-resolved registration/revert), `selection.go` (selection resolution,
+  identity pins, Mullvad filter), `hosts.go` (/etc/hosts managed block),
+  `control.go` (daemon registry + unix socket server + mutation endpoints),
+  `configpatch.go` (comment-preserving hujson config edits + atomic write),
+  `controlclient.go` (CLI clients + formatting), `web.go` + `web/` (embedded
+  vanilla-JS UI on the TCP listener), `tun_linux.go` (raw TUN via ioctl + `ip`
+  helpers).
 - **Branches:** merged to `main`; host-mode work lives on
   `ts-plug/multinet-host-mode`.
 - **Auth:** no authkeys — persistent nodes with one-time browser login
@@ -145,19 +173,26 @@ Everything a fresh session needs to pick this up.
   `/var/lib/ts-multinet`). Pinned deps: `gvisor.dev/gvisor@v0.0.0-20250205023644`,
   `tailscale.com@v1.94.2`.
 
-## Build & test (Docker only — never run go/python on the host)
+## Build & test (host)
 
 ```sh
-# compile-check fast (reuses host module cache)
-docker run --rm -v "$PWD":/src -w /src -v /home/greg/go/pkg/mod:/go/pkg/mod \
-  golang:1.26 sh -c 'go build -buildvcs=false -o /tmp/x ./cmd/ts-multinet && go vet -buildvcs=false ./cmd/ts-multinet'
+make ts-multinet                     # builds build/ts-multinet (go + module cache on the host)
+go vet ./cmd/ts-multinet
+go test ./cmd/ts-multinet -count=1   # unit tests: dns domains, config patching, web mux, ...
+./scripts/install-ts-multinet.sh --help
+```
 
+The host-mode daemon needs root (TUNs, routes, `/etc/hosts`, `resolvectl`) —
+install it as a service (`scripts/install-ts-multinet.sh`) and drive it with
+`sudo ts-multinet <cmd>` / the web UI. For container-mode runtimes:
+
+```sh
 make docker-ts-multinet          # build the alpine runtime image
-set -a; . ./.envrc; set +a
 
 docker run -d --name tsm --cap-add NET_ADMIN --device /dev/net/tun \
-  -e TS_AUTHKEY_SKYNET -e TS_AUTHKEY_TSJUSTWORKS -e TS_AUTHKEY_BORDER0_COM ts-multinet
+  -v tsm-state:/var/lib/ts-multinet ts-multinet
 
+docker exec tsm ts-multinet login skynet    # one-time browser login; state persists in the volume
 docker exec tsm ts-multinet status
 docker exec tsm ts-multinet peers rpi4
 docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
@@ -194,8 +229,10 @@ The image (alpine) ships a toolbox: `dig`, `curl`, `nc`, `tcpdump`, `jq`, `bash`
    identity pins, and an `/etc/hosts` managed block. The Mullvad exits that
    flood big tailnets are filtered out of listings and selection (adopted from
    Cauldron's connector implementation).
-2. **Proper host DNS** — register the responder with systemd-resolved the
-   right way (or bind it on the TUN) so bare names resolve system-wide.
+2. ~~**Proper host DNS**~~ — **done.** Per-TUN registration with
+   systemd-resolved (routing domains for suffix + custom `domain`), with
+   warn-and-continue fallbacks (no resolved → hosts block; port 53 held →
+   move `dns_listen`). See `resolved.go`.
 3. **macOS / Windows backends** — single-TUN (utun / Wintun), no eBPF. The
    steering core (DNS + synthetic ranges + tun2socks) is already
    device-count-agnostic; only the TUN plumbing differs per OS.
@@ -207,5 +244,9 @@ The image (alpine) ships a toolbox: `dig`, `curl`, `nc`, `tcpdump`, `jq`, `bash`
    routing-table collisions (multi-instance tailscaled pain).
 6. **IPv6 synthetic range** (currently A-only; AAAA returns empty NOERROR),
    plus user-defined synthetic ranges.
-7. **CLI selection commands (`select`/`forget`) and a local web UI / tray** —
-   the control socket is the substrate; config editing suffices today.
+7. ~~**CLI selection commands (`select`/`forget`) and a local web UI / tray**~~
+   — **done** for CLI + web UI: `select`/`forget`/`allow-all`/`domain` verbs
+   and an embedded localhost web UI (dashboard, selection, logins, reload) on
+   `ui_listen`. A tray app remains unexplored; config editing still works.
+   Bare short names on the host (`ping host` without a suffix) would need
+   search-domain decisions per host — still open, arguably part of this item.

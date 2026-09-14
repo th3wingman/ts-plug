@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/tailscale/hujson"
 )
 
 // testConfig seeds a temp config from the shipped example and returns its path.
@@ -100,7 +102,11 @@ func TestPatchForgetReverses(t *testing.T) {
 	if len(got.Resources) != 0 || got.AllowAll || got.Domain != "" {
 		t.Fatalf("reversal incomplete: %+v", got)
 	}
-	if strings.Contains(mustRead(t, path), `"domain"`) {
+	// The example documents "domain" in a comment, so check the live members,
+	// not the raw text: standardize (strip comments) before looking.
+	if std, err := hujson.Standardize([]byte(mustRead(t, path))); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(std), `"domain"`) {
 		t.Errorf("removed domain member survived:\n%s", mustRead(t, path))
 	}
 }
