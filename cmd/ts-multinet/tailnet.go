@@ -130,6 +130,9 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 		tn.watch(tctx, reg, onRunning)
 	}()
 	slog.Info("tailnet up", "name", conf.Name, "tun", dev, "cidr", conf.CIDR, "suffix", orDefault(suffix, "(auto)"))
+	if w := tldWarning(conf.domainName()); w != "" {
+		slog.Warn(w, "name", conf.Name)
+	}
 	return tn, nil
 }
 

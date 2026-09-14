@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The shipped example must load as-is: it is HuJSON (comments, trailing
 // commas) and seeds /etc/ts-multinet/config.json on install. It ships with
@@ -36,6 +39,17 @@ func TestNodeHostnameDefault(t *testing.T) {
 	tc := TailnetConf{Name: "dev", Hostname: "xps13"}
 	if got := tc.nodeHostname(); got != "xps13" {
 		t.Fatalf("explicit hostname = %q", got)
+	}
+	// short single-label domains look like public TLDs — warn, don't block
+	for _, d := range []string{"dev", "io", "lan4"} {
+		if w := tldWarning(d); w == "" || !strings.Contains(w, "public TLD") {
+			t.Fatalf("tldWarning(%q) = %q", d, w)
+		}
+	}
+	for _, d := range []string{"skynet", "my-corp-net", ""} {
+		if tldWarning(d) != "" {
+			t.Fatalf("tldWarning(%q) should be empty", d)
+		}
 	}
 	if got := (TailnetConf{Name: "My Corp Net"}).domainName(); got != "my-corp-net" {
 		t.Fatalf("domainName fallback = %q", got)

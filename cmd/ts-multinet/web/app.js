@@ -131,12 +131,14 @@ async function setAllowAll(name, on) {
 
 async function setDomain(name, input) {
   try {
-    await post(`/tailnet/${encodeURIComponent(name)}/domain`, {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/domain`, {
       domain: input.value.trim(),
     });
+    // the server's ok text carries warnings (short domains that look like
+    // public TLDs) — prefer it over a canned message
     state.cardMsgs[name] = {
-      kind: "ok",
-      text: "domain updated (empty = tailnet name)",
+      kind: res.ok?.includes("warning") ? "info" : "ok",
+      text: res.ok || "domain updated (empty = tailnet name)",
     };
   } catch (e) {
     state.cardMsgs[name] = { kind: "error", text: e.message };

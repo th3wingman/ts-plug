@@ -813,7 +813,7 @@ func (e clientError) Error() string { return e.msg }
 // (select/forget): those still 404 on a parked tailnet. The config-only
 // handlers (domain/hostname/allow-all) proceed on a parked one — the config
 // entry is mutated and the next sync (or background busy retry) starts it.
-func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, needsLive bool, fn func(req selectionReq, tc *TailnetConf, peers []string) error) {
+func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, needsLive bool, fn func(req selectionReq, tc *TailnetConf, peers []string) error, note func(req selectionReq) string) {
 	name := r.PathValue("name")
 	var req selectionReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -861,6 +861,11 @@ func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, needsLive
 		return
 	}
 	ok := "config updated; selections re-applied"
+	if note != nil {
+		if extra := note(req); extra != "" {
+			ok += "; " + extra
+		}
+	}
 	if notice != "" {
 		ok += "; " + notice
 	}
@@ -881,7 +886,7 @@ func (d *Daemon) handleSelect(w http.ResponseWriter, r *http.Request) {
 			tc.Resources = append(tc.Resources, req.Peer)
 		}
 		return nil
-	})
+	}, nil)
 }
 
 // handleForget removes a peer from resources (any name — stale entries can
@@ -893,7 +898,7 @@ func (d *Daemon) handleForget(w http.ResponseWriter, r *http.Request) {
 		}
 		tc.Resources = slices.DeleteFunc(tc.Resources, func(s string) bool { return s == req.Peer })
 		return nil
-	})
+	}, nil)
 }
 
 // handleAllowAll toggles selecting every non-Mullvad peer.
@@ -904,7 +909,7 @@ func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
 		}
 		tc.AllowAll = *req.On
 		return nil
-	})
+	}, nil)
 }
 
 // handleDomain sets the tailnet's friendly DNS suffix (my-server.<domain>);
@@ -916,6 +921,10 @@ func (d *Daemon) handleDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		tc.Domain = req.Domain
 		return nil
+	}, func(req selectionReq) string {
+		// cleared domains fall back to the (possibly short) name — warn on that too
+		domain := orDefault(req.Domain, slugify(strings.SplitN(r.PathValue("name"), ".", 2)[0]))
+		return tldWarning(domain)
 	})
 }
 
@@ -929,7 +938,7 @@ func (d *Daemon) handleHostname(w http.ResponseWriter, r *http.Request) {
 		}
 		tc.Hostname = req.Hostname
 		return nil
-	})
+	}, nil)
 }
 
 // domainRE matches a lowercase DNS name: labels of 1-63 [a-z0-9-] that
@@ -938,6 +947,18 @@ var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9
 
 func validDomain(s string) bool {
 	return len(s) <= 253 && domainRE.MatchString(s)
+}
+
+// tldWarning flags friendly domains that collide with public TLD space: a
+// single label of ≤4 chars (dev, app, io, ai, sh, me, tv, so, to, co…) is
+// very likely a real gTLD. With the alias fall-through, unknown names under
+// it still resolve publicly — only names matching a peer's short name shadow
+// public domains — so this informs rather than blocks.
+func tldWarning(domain string) string {
+	if domain == "" || strings.Contains(domain, ".") || len(domain) > 4 {
+		return ""
+	}
+	return fmt.Sprintf("warning: \"%s\" is short enough to be a public TLD (*.%s) — unknown names still resolve publicly, but peer names shadow public ones", domain, domain)
 }
 
 // validTailnetName accepts any printable name that is safe as a state-dir
@@ -1061,6 +1082,9 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 	res := map[string]string{"ok": "tailnet added and started — `login` next", "name": tc.Name, "cidr": tc.CIDR, "tun": tc.TUN}
 	if tc.Domain != "" {
 		res["domain"] = tc.Domain
+	}
+	if w := tldWarning(tc.Domain); w != "" {
+		res["ok"] += "; " + w
 	}
 	if notice != "" {
 		res["ok"] += "; " + notice
