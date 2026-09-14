@@ -94,6 +94,7 @@ main {
   font: inherit;
   padding: 5px 14px;
   cursor: pointer;
+  white-space: nowrap; /* a squeezed card must never split a button label */
 }
 .btn:hover {
   border-color: var(--accent);
@@ -179,7 +180,8 @@ main {
   font-family: var(--mono);
   font-size: 13px;
   padding: 3px 8px;
-  width: 100%;
+  flex: 1 1 8ch; /* share the row with the save button instead of forcing 100% */
+  min-width: 0;
 }
 
 .card__actions {

@@ -610,9 +610,11 @@ func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, loginResult{Tailnet: req.Tailnet, State: state, Error: err.Error()})
 		return
 	}
-	// Poll for the auth URL to surface (usually immediate).
+	// Poll for the auth URL to surface (usually immediate). Fresh nodes can
+	// take longer than one request should hold open, so the window is modest
+	// and the watcher keeps recording the URL for status/UI to pick up.
 	loginURL := ""
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		st, err := tn.lc.Status(r.Context())
 		if err == nil && st.AuthURL != "" {
@@ -624,12 +626,15 @@ func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	state, _ = tn.status()
+	state, recorded := tn.status() // the watcher may have caught it after the poll gave up
 	res := loginResult{Tailnet: req.Tailnet, State: state}
-	if loginURL != "" {
+	switch {
+	case loginURL != "":
 		res.LoginURL = loginURL
-	} else {
-		res.Error = "login started but no URL surfaced; check `status`"
+	case recorded != "":
+		res.LoginURL = recorded
+	default:
+		res.Error = "login started; the URL will appear in `status` and on the dashboard shortly"
 	}
 	writeJSON(w, res)
 }
