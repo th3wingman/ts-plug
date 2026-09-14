@@ -104,6 +104,20 @@ Nothing — the CLI flags lane (`872c1c3`) and both DNS hardening pieces
 
 ## Pick up here (next session)
 
+0. **Queued behind the running worker** (EBUSY self-heal / add-with-hostname /
+   parked mutations — owns control.go, tailnet.go, configpatch.go):
+   - **short-domain TLD warning**: when a tailnet's effective domain is a
+     single label of ≤4 chars (dev, app, io, ai, sh, me, tv, so, to, co…),
+     warn — at `add` and `domain` set (append to the ok text so the UI shows
+     it), and once per start in the journal. Text: unknown names under it
+     still resolve publicly (fall-through), but names matching a peer's
+     short name shadow public domains. Helper + unit tests.
+   - **scale lane, shape depends on the user's answer**: corp has 2000+ peers
+     — (a) peers view: default cap + filter-first + no port-probing for big
+     tailnets; (b) if the user wants bulk exposure (allow-all): /24 synthetic
+     ranges cap at 254 hosts — manual wider `cidr` inside 198.18.0.0/15 works
+     today (/21 ≈ 2046); make the auto-picker size-aware. ASK: handful vs
+     bulk.
 1. **Reinstall + verify on this host**: `sudo ./scripts/install-ts-multinet.sh`
    (restarts the daemon; all fixes land; msinfra should self-start via the
    TUN-retry). Then:
