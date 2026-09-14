@@ -17,20 +17,12 @@ import (
 
 // patchConfigFile rewrites path so parsing it yields next, editing the hujson
 // AST in place. prev is the same file parsed before the change; the diff
-// decides which members to set, insert, or remove. Fails without writing if
-// the two configs differ structurally or the patched bytes don't re-parse to
-// exactly next.
+// decides which members to set, insert, or remove. Structural changes are
+// supported: added tailnets append (bare members, no comments), removed ones
+// delete, and a cidr/tun change rewrites the element. Fails without writing
+// if the patched bytes don't re-parse to exactly next — a rename therefore
+// lands as remove+add, which is the same net effect on a running daemon.
 func patchConfigFile(path string, prev, next *Config) error {
-	if len(prev.Tailnets) != len(next.Tailnets) {
-		return fmt.Errorf("config patch cannot add or remove tailnets — restart the daemon instead")
-	}
-	for i := range next.Tailnets {
-		o, n := prev.Tailnets[i], next.Tailnets[i]
-		if o.Name != n.Name || o.CIDR != n.CIDR || o.TUN != n.TUN {
-			return fmt.Errorf("config patch cannot change tailnet structure — restart the daemon instead")
-		}
-	}
-
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -48,35 +40,61 @@ func patchConfigFile(path string, prev, next *Config) error {
 		return err
 	}
 
+	prevBy := make(map[string]*TailnetConf, len(prev.Tailnets))
+	for i := range prev.Tailnets {
+		prevBy[prev.Tailnets[i].Name] = &prev.Tailnets[i]
+	}
+	nextView := make(map[string]*TailnetConf, len(next.Tailnets))
 	for i := range next.Tailnets {
-		o, n := prev.Tailnets[i], next.Tailnets[i]
-		obj, err := tailnetObject(arr, n.Name)
-		if err != nil {
-			return err
+		nextView[next.Tailnets[i].Name] = &next.Tailnets[i]
+	}
+	for _, o := range prev.Tailnets {
+		if nextView[o.Name] == nil {
+			removeTailnetElement(arr, o.Name)
 		}
-		if o.Domain != n.Domain {
-			if n.Domain == "" {
-				removeMember(obj, "domain")
-			} else {
-				setMember(obj, "domain", hujson.String(n.Domain))
+	}
+	for i := range next.Tailnets {
+		n := &next.Tailnets[i]
+		o := prevBy[n.Name]
+		switch {
+		case o == nil:
+			insertTailnetElement(arr, *n)
+		case o.CIDR != n.CIDR || o.TUN != n.TUN || o.Suffix != n.Suffix ||
+			(o.Enabled == nil) != (n.Enabled == nil) || o.Enabled != nil && n.Enabled != nil && *o.Enabled != *n.Enabled ||
+			o.StateDir != n.StateDir:
+			// Anything structural rewrites the whole element; only the three
+			// mutable keys below are worth preserving comments on.
+			removeTailnetElement(arr, n.Name)
+			insertTailnetElement(arr, *n)
+		default:
+			obj, err := tailnetObject(arr, n.Name)
+			if err != nil {
+				return err
 			}
-		}
-		if o.AllowAll != n.AllowAll {
-			if !n.AllowAll {
-				removeMember(obj, "allow_all")
-			} else {
-				setMember(obj, "allow_all", hujson.Bool(true))
-			}
-		}
-		if !slices.Equal(o.Resources, n.Resources) {
-			if len(n.Resources) == 0 {
-				removeMember(obj, "resources")
-			} else {
-				els := make([]hujson.ArrayElement, len(n.Resources))
-				for j, r := range n.Resources {
-					els[j] = hujson.Value{Value: hujson.String(r)}
+			if o.Domain != n.Domain {
+				if n.Domain == "" {
+					removeMember(obj, "domain")
+				} else {
+					setMember(obj, "domain", hujson.String(n.Domain))
 				}
-				setMember(obj, "resources", &hujson.Array{Elements: els})
+			}
+			if o.AllowAll != n.AllowAll {
+				if !n.AllowAll {
+					removeMember(obj, "allow_all")
+				} else {
+					setMember(obj, "allow_all", hujson.Bool(true))
+				}
+			}
+			if !slices.Equal(o.Resources, n.Resources) {
+				if len(n.Resources) == 0 {
+					removeMember(obj, "resources")
+				} else {
+					els := make([]hujson.ArrayElement, len(n.Resources))
+					for j, r := range n.Resources {
+						els[j] = hujson.Value{Value: hujson.String(r)}
+					}
+					setMember(obj, "resources", &hujson.Array{Elements: els})
+				}
 			}
 		}
 	}
@@ -117,7 +135,9 @@ func configsEqual(a, b *Config) bool {
 	return true
 }
 
-// tailnetsArray returns the root object's "tailnets" array.
+// tailnetsArray returns the root object's "tailnets" array, creating an
+// empty one when the member is absent (a zero-tailnet config is valid; the
+// first runtime add needs somewhere to land).
 func tailnetsArray(root *hujson.Object) (*hujson.Array, error) {
 	for i := range root.Members {
 		if nameOf(root.Members[i]) != "tailnets" {
@@ -129,7 +149,12 @@ func tailnetsArray(root *hujson.Object) (*hujson.Array, error) {
 		}
 		return arr, nil
 	}
-	return nil, fmt.Errorf("config has no tailnets member")
+	arr := &hujson.Array{}
+	root.Members = append(root.Members, hujson.ObjectMember{
+		Name:  hujson.Value{BeforeExtra: hujson.Extra("\n  "), Value: hujson.String("tailnets")},
+		Value: hujson.Value{BeforeExtra: hujson.Extra(" "), Value: arr},
+	})
+	return arr, nil
 }
 
 // tailnetObject finds the tailnets-array element whose "name" is name.
@@ -158,6 +183,69 @@ func nameOf(m hujson.ObjectMember) string {
 		return ""
 	}
 	return lit.String()
+}
+
+// removeTailnetElement deletes the element whose "name" is name; a no-op
+// (false) when absent. Pack's comma handling absorbs the gap automatically.
+func removeTailnetElement(arr *hujson.Array, name string) bool {
+	for i := range arr.Elements {
+		obj, ok := arr.Elements[i].Value.(*hujson.Object)
+		if !ok {
+			continue
+		}
+		for j := range obj.Members {
+			if nameOf(obj.Members[j]) == "name" {
+				if lit, ok := obj.Members[j].Value.Value.(hujson.Literal); ok && lit.String() == name {
+					arr.Elements = append(arr.Elements[:i], arr.Elements[i+1:]...)
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// insertTailnetElement appends a tailnet object in canonical member order
+// (name, cidr, tun, then set optionals), formatted like the shipped config:
+// indented members and the trailing-comma style hujson flags via a non-nil
+// AfterExtra on the last element. Bare members — comments are human territory.
+func insertTailnetElement(arr *hujson.Array, tc TailnetConf) {
+	obj := &hujson.Object{}
+	addMember := func(name string, val hujson.ValueTrimmed) {
+		obj.Members = append(obj.Members, hujson.ObjectMember{
+			Name:  hujson.Value{BeforeExtra: hujson.Extra("\n      "), Value: hujson.String(name)},
+			Value: hujson.Value{BeforeExtra: hujson.Extra(" "), Value: val},
+		})
+	}
+	addMember("name", hujson.String(tc.Name))
+	addMember("cidr", hujson.String(tc.CIDR))
+	addMember("tun", hujson.String(tc.TUN))
+	if tc.Suffix != "" {
+		addMember("suffix", hujson.String(tc.Suffix))
+	}
+	if tc.Domain != "" {
+		addMember("domain", hujson.String(tc.Domain))
+	}
+	if tc.Enabled != nil {
+		addMember("enabled", hujson.Bool(*tc.Enabled))
+	}
+	if tc.AllowAll {
+		addMember("allow_all", hujson.Bool(true))
+	}
+	if len(tc.Resources) > 0 {
+		els := make([]hujson.ArrayElement, len(tc.Resources))
+		for j, r := range tc.Resources {
+			els[j] = hujson.Value{Value: hujson.String(r)}
+		}
+		addMember("resources", &hujson.Array{Elements: els})
+	}
+	obj.AfterExtra = hujson.Extra("\n    ")
+	arr.Elements = append(arr.Elements, hujson.Value{BeforeExtra: hujson.Extra("\n    "), Value: obj})
+	// hujson emits the trailing comma when the last element's AfterExtra is
+	// non-nil; the file's style keeps it.
+	if last := &arr.Elements[len(arr.Elements)-1]; last.AfterExtra == nil {
+		last.AfterExtra = hujson.Extra("")
+	}
 }
 
 // setMember replaces an existing member's value (keeping its name, comments,

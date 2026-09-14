@@ -152,29 +152,82 @@ func TestPatchInsertsMissingMembers(t *testing.T) {
 	}
 }
 
-func TestPatchRejectsStructuralChanges(t *testing.T) {
+func TestPatchAddRewriteRemoveTailnet(t *testing.T) {
 	path := testConfig(t)
-	before := mustRead(t, path)
 
-	cases := map[string]func(next *Config){
-		"remove tailnet": func(n *Config) { n.Tailnets = n.Tailnets[:len(n.Tailnets)-1] },
-		"rename tailnet": func(n *Config) { n.Tailnets[0].Name = "renamed" },
-		"change cidr":    func(n *Config) { n.Tailnets[0].CIDR = "198.18.9.0/24" },
-		"change tun":     func(n *Config) { n.Tailnets[0].TUN = "tsm9" },
-		"add tailnet": func(n *Config) {
-			n.Tailnets = append(n.Tailnets, TailnetConf{Name: "x", CIDR: "198.18.2.0/24", TUN: "tsm1"})
-		},
+	// add: bare members, comments elsewhere untouched
+	prev := mustLoad(t, path)
+	next, _ := cloneConfig(prev)
+	corp := TailnetConf{Name: "corp", CIDR: "198.18.2.0/24", TUN: "tsm1", Domain: "hq", AllowAll: true, Resources: []string{"host1"}}
+	next.Tailnets = append(next.Tailnets, corp)
+	if err := patchConfigFile(path, prev, next); err != nil {
+		t.Fatal(err)
 	}
-	for name, mutate := range cases {
-		prev := mustLoad(t, path)
-		next, _ := cloneConfig(prev)
-		mutate(next)
-		if err := patchConfigFile(path, prev, next); err == nil {
-			t.Errorf("%s: patch accepted a structural change", name)
-		}
+	assertComments(t, path)
+	got := confByName(mustLoad(t, path), "corp")
+	if got == nil || got.CIDR != corp.CIDR || got.TUN != corp.TUN || got.Domain != "hq" || !got.AllowAll || !slices.Equal(got.Resources, []string{"host1"}) {
+		t.Fatalf("added tailnet round-trip wrong: %+v", got)
 	}
-	if after := mustRead(t, path); after != before {
-		t.Errorf("rejected patch still wrote the file")
+
+	// rewrite: a cidr/tun change rewrites the element wholesale
+	cur := mustLoad(t, path)
+	edited, _ := cloneConfig(cur)
+	e := confByName(edited, "corp")
+	e.CIDR = "198.18.3.0/24"
+	e.TUN = "tsm9"
+	e.Domain = "" // unset optionals drop out of the rewritten element
+	if err := patchConfigFile(path, cur, edited); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	got = confByName(mustLoad(t, path), "corp")
+	if got.CIDR != "198.18.3.0/24" || got.TUN != "tsm9" || got.Domain != "" || !got.AllowAll {
+		t.Fatalf("rewritten tailnet wrong: %+v", got)
+	}
+
+	// remove: the element is gone, the rest untouched
+	cur = mustLoad(t, path)
+	drop, _ := cloneConfig(cur)
+	drop.Tailnets = slices.DeleteFunc(drop.Tailnets, func(tc TailnetConf) bool { return tc.Name == "corp" })
+	if err := patchConfigFile(path, cur, drop); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	if confByName(mustLoad(t, path), "corp") != nil {
+		t.Fatal("corp still in config after remove")
+	}
+}
+
+func TestPatchRemoveLastTailnetLeavesValidEmptyConfig(t *testing.T) {
+	// The empty-config scenario: deleting the final tailnet must leave a
+	// file that still parses (with zero tailnets) and keeps its comments.
+	path := testConfig(t)
+	prev := mustLoad(t, path)
+	next, _ := cloneConfig(prev)
+	next.Tailnets = nil
+	if err := patchConfigFile(path, prev, next); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := mustLoad(t, path); len(cfg.Tailnets) != 0 {
+		t.Fatalf("expected zero tailnets, got %+v", cfg.Tailnets)
+	}
+	if !strings.Contains(mustRead(t, path), "// matches StateDirectory= in the systemd unit") {
+		t.Errorf("top-level comment lost:\n%s", mustRead(t, path))
+	}
+}
+
+func TestPatchRenameLandsAsRemoveAndAdd(t *testing.T) {
+	// A rename is indistinguishable from remove+add, so that is what it is.
+	path := testConfig(t)
+	prev := mustLoad(t, path)
+	next, _ := cloneConfig(prev)
+	next.Tailnets[0].Name = "renamed"
+	if err := patchConfigFile(path, prev, next); err != nil {
+		t.Fatal(err)
+	}
+	got := mustLoad(t, path)
+	if len(got.Tailnets) != 1 || got.Tailnets[0].Name != "renamed" {
+		t.Fatalf("rename did not land as remove+add: %+v", got.Tailnets)
 	}
 }
 

@@ -37,6 +37,17 @@ type Daemon struct {
 	cfgPath   string
 	hostsFile string
 
+	// rt is what syncTailnets needs to start tailnets at runtime. Startup
+	// uses the same path, so a boot-time add and an API add are identical.
+	// starter is swappable so tests can watch starts/stops without tsnet.
+	rt struct {
+		ctx     context.Context
+		mtu     uint32
+		baseDir string
+		rs      *resolvedSync
+		starter func(ctx context.Context, conf TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error)
+	}
+
 	// cfgMu serializes config mutations so concurrent control requests
 	// can't lose updates; d.mu still guards the tailnet list itself.
 	cfgMu sync.Mutex
@@ -69,10 +80,93 @@ func livePeerShorts(ctx context.Context, tn *Tailnet) ([]string, error) {
 	return out, nil
 }
 
-func (d *Daemon) setTailnets(nets []*Tailnet) {
+// liveTailnets returns a copy of the running set.
+func (d *Daemon) liveTailnets() []*Tailnet {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.tailnets = nets
+	return append([]*Tailnet(nil), d.tailnets...)
+}
+
+// syncTailnets makes the running set match cfg: added tailnets start,
+// removed or disabled ones stop, a cidr/tun change is stop+start, and
+// everything else (resources, allow_all, domain) swaps in place. Startup and
+// every config mutation funnel through here, so nothing needs a service
+// restart. Tailnets left in the config that fail to start are reported as an
+// error and retried on the next sync — never dropped from the file.
+func (d *Daemon) syncTailnets(cfg *Config) error {
+	if d.rt.starter == nil {
+		d.rt.starter = startTailnet
+	}
+
+	wantByName := make(map[string]*TailnetConf, len(cfg.Tailnets))
+	for i := range cfg.Tailnets {
+		wantByName[strings.ToLower(cfg.Tailnets[i].Name)] = &cfg.Tailnets[i]
+	}
+
+	// Stop pass: gone from config, disabled, or structurally changed.
+	for _, tn := range d.liveTailnets() {
+		tc, want := wantByName[strings.ToLower(tn.conf.Name)]
+		if !want || !tc.enabled() || tn.conf.CIDR != tc.CIDR || tn.conf.TUN != tc.TUN {
+			d.stopTailnet(tn)
+			continue
+		}
+		// Mutable swap. The registry must follow a domain change here or DNS
+		// would keep matching the old friendly suffix (the watcher only
+		// re-registers the resolved side).
+		if tn.conf.Domain != tc.Domain {
+			d.reg.registerDomain(tc.Name, tc.domainName())
+		}
+		tn.conf = *tc
+	}
+
+	// Start pass: enabled entries not yet running (added, restarted after a
+	// cidr/tun change, or failed earlier and retried).
+	live := make(map[string]bool)
+	for _, tn := range d.liveTailnets() {
+		live[strings.ToLower(tn.conf.Name)] = true
+	}
+	var startErrs []string
+	for _, tc := range cfg.Tailnets {
+		if !tc.enabled() || live[strings.ToLower(tc.Name)] {
+			continue
+		}
+		if err := d.reg.add(tc); err != nil {
+			startErrs = append(startErrs, err.Error())
+			continue
+		}
+		slog.Info("tailnet starting", "name", tc.Name, "tun", tc.TUN, "cidr", tc.CIDR)
+		tn, err := d.rt.starter(d.rt.ctx, tc, d.reg, d.rt.mtu, d.rt.baseDir, d.applySelections, d.rt.rs)
+		if err != nil {
+			d.reg.remove(tc.Name)
+			startErrs = append(startErrs, fmt.Sprintf("%s: %v", tc.Name, err))
+			continue
+		}
+		d.mu.Lock()
+		d.tailnets = append(d.tailnets, tn)
+		d.mu.Unlock()
+	}
+
+	d.applySelections()
+	if len(startErrs) > 0 {
+		return fmt.Errorf("tailnets in config but not started (retried on every config change and `reload`): %s", strings.Join(startErrs, "; "))
+	}
+	return nil
+}
+
+// stopTailnet tears one tailnet down: out of the list, resolved reverted
+// while its TUN still exists, registry scrubbed, then goroutines + TUN +
+// tsnet. Node state (login identity, selection pins) is kept — a re-add
+// comes back up Running without a new browser login.
+func (d *Daemon) stopTailnet(tn *Tailnet) {
+	d.mu.Lock()
+	d.tailnets = slices.DeleteFunc(d.tailnets, func(t *Tailnet) bool { return t == tn })
+	d.mu.Unlock()
+	if tn.resolved != nil {
+		tn.resolved.revert(tn.dev)
+	}
+	d.reg.remove(tn.conf.Name)
+	tn.Close()
+	slog.Info("tailnet stopped", "name", tn.conf.Name, "tun", tn.dev)
 }
 
 // applySelections resolves every running tailnet's configured selections,
@@ -187,43 +281,77 @@ func cloneConfig(c *Config) (*Config, error) {
 
 // applyConfigUpdate is the one path by which the daemon edits its config: fn
 // mutates a parsed copy, the file is rewritten comment-preserving (hujson
-// AST), the in-memory confs are swapped, and selections re-apply (hosts
-// block, synthetic IPs). Manual edits keep working — the file is re-read on
-// every update; structural changes still need a restart.
-func (d *Daemon) applyConfigUpdate(fn func(*Config) error) error {
+// AST), and syncTailnets makes the running set match (starts/stops included).
+// Returns a notice naming global fields fn changed that only a service
+// restart can apply. Manual edits keep working — the file is re-read on every
+// update and `reload` syncs them live.
+func (d *Daemon) applyConfigUpdate(fn func(*Config) error) (string, error) {
 	d.cfgMu.Lock()
 	defer d.cfgMu.Unlock()
 	cfg, err := loadConfig(d.cfgPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	prev, err := cloneConfig(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := fn(cfg); err != nil {
-		return err
+		return "", err
 	}
 	if err := patchConfigFile(d.cfgPath, prev, cfg); err != nil {
-		return err
+		return "", err
 	}
-	d.mu.Lock()
-	for _, tn := range d.tailnets {
-		if tc := confByName(cfg, tn.conf.Name); tc != nil {
-			tn.conf = *tc
-		}
+	notice := restartNotice(prev, cfg)
+	if err := d.syncTailnets(cfg); err != nil {
+		return notice, err
 	}
-	d.mu.Unlock()
-	d.applySelections()
-	return nil
+	return notice, nil
 }
 
-// reload re-applies selections from the current config file and rewrites the
-// hosts block. Structural changes (adding/removing tailnets, changing cidr or
-// tun) need a daemon restart; selection changes apply immediately.
+// restartNotice names the global (non-tailnet) fields that changed and need
+// a service restart — everything tailnet-level applies live via syncTailnets.
+func restartNotice(prev, next *Config) string {
+	var fields []string
+	if prev.MTU != next.MTU {
+		fields = append(fields, "mtu")
+	}
+	if prev.DNSListen != next.DNSListen {
+		fields = append(fields, "dns_listen")
+	}
+	if prev.UpstreamDNS != next.UpstreamDNS {
+		fields = append(fields, "upstream_dns")
+	}
+	if prev.StateDir != next.StateDir {
+		fields = append(fields, "state_dir")
+	}
+	if prev.HostsFile != next.HostsFile {
+		fields = append(fields, "hosts_file")
+	}
+	if prev.UIListen != next.UIListen {
+		fields = append(fields, "ui_listen")
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return "restart needed for: " + strings.Join(fields, ", ")
+}
+
+// reload re-reads the config file and syncs the running tailnets to it, so
+// manual edits (tailnets included) apply without a service restart. Only
+// globals (mtu, dns_listen, upstream_dns, state_dir, hosts_file, ui_listen)
+// still need one.
 func (d *Daemon) reload() string {
-	d.applySelections()
-	return "selections re-applied; structural tailnet changes need a restart"
+	d.cfgMu.Lock()
+	defer d.cfgMu.Unlock()
+	cfg, err := loadConfig(d.cfgPath)
+	if err != nil {
+		return "config unreadable: " + err.Error()
+	}
+	if err := d.syncTailnets(cfg); err != nil {
+		return err.Error()
+	}
+	return "config re-read and applied (tailnets started/stopped as needed); globals (mtu, dns_listen, upstream_dns, state_dir, hosts_file, ui_listen) still need a restart"
 }
 
 // --- JSON wire types (shared with the client) ---
@@ -288,6 +416,8 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
+	mux.HandleFunc("POST /tailnet", d.handleAddTailnet)
+	mux.HandleFunc("DELETE /tailnet/{name}", d.handleRemoveTailnet)
 	return mux
 }
 
@@ -504,8 +634,8 @@ func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, res)
 }
 
-// handleReload re-applies selections from the config file and rewrites the
-// hosts block. Structural changes need a daemon restart.
+// handleReload re-reads the config file and syncs the running tailnets to
+// it — manual edits (tailnets included) apply without a service restart.
 func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
 	msg := d.reload()
 	writeJSON(w, map[string]string{"ok": msg})
@@ -566,13 +696,14 @@ func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, fn func(r
 		writeErr(w, http.StatusServiceUnavailable, "tailnet status unavailable: "+err.Error())
 		return
 	}
-	if err := d.applyConfigUpdate(func(c *Config) error {
+	notice, err := d.applyConfigUpdate(func(c *Config) error {
 		tc := confByName(c, name)
 		if tc == nil {
 			return fmt.Errorf("tailnet %q vanished from config", name)
 		}
 		return fn(req, tc, peers)
-	}); err != nil {
+	})
+	if err != nil {
 		var ce clientError
 		if errors.As(err, &ce) {
 			writeErr(w, http.StatusBadRequest, ce.msg)
@@ -581,7 +712,11 @@ func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, fn func(r
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"ok": "config updated; selections re-applied"})
+	ok := "config updated; selections re-applied"
+	if notice != "" {
+		ok += "; " + notice
+	}
+	writeJSON(w, map[string]string{"ok": ok})
 }
 
 // handleSelect adds a peer to the tailnet's resources. The peer must be a
@@ -642,6 +777,193 @@ var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9
 
 func validDomain(s string) bool {
 	return len(s) <= 253 && domainRE.MatchString(s)
+}
+
+// handleAddTailnet adds a tailnet at runtime: cidr/tun are optional and
+// picked free when omitted (next /24 in 198.18.0.0/15, first free tsm<N>).
+// The entry lands in the config (comments elsewhere survive) and starts
+// immediately — a fresh tailnet boots into NeedsLogin, so the next step is
+// `ts-multinet login <name>` or the web UI's login button.
+func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name   string `json:"name"`
+		CIDR   string `json:"cidr"`
+		TUN    string `json:"tun"`
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "body must be {\"name\": \"...\", \"cidr\"?, \"tun\"?, \"domain\"?}")
+		return
+	}
+	req.Name = strings.ToLower(strings.TrimSpace(req.Name))
+	if !validDomain(req.Name) {
+		writeErr(w, http.StatusBadRequest, "invalid name "+strconv.Quote(req.Name)+": lowercase labels of [a-z0-9-], 1-63 chars each")
+		return
+	}
+	if req.Domain != "" && !validDomain(req.Domain) {
+		writeErr(w, http.StatusBadRequest, "invalid domain "+strconv.Quote(req.Domain))
+		return
+	}
+
+	tc, err := func() (TailnetConf, error) {
+		d.cfgMu.Lock()
+		defer d.cfgMu.Unlock()
+		cfg, err := loadConfig(d.cfgPath)
+		if err != nil {
+			return TailnetConf{}, err
+		}
+		if confByName(cfg, req.Name) != nil {
+			return TailnetConf{}, clientError{fmt.Sprintf("tailnet %q already exists", req.Name)}
+		}
+		cidr := req.CIDR
+		if cidr == "" {
+			if cidr, err = nextFreeCIDR(cfg); err != nil {
+				return TailnetConf{}, clientError{err.Error()}
+			}
+		} else if err := checkCIDR(cidr, cfg); err != nil {
+			return TailnetConf{}, clientError{err.Error()}
+		}
+		tun := req.TUN
+		if tun == "" {
+			if tun, err = firstFreeTUN(cfg); err != nil {
+				return TailnetConf{}, clientError{err.Error()}
+			}
+		} else if len(tun) > 15 {
+			return TailnetConf{}, clientError{fmt.Sprintf("tun name %q exceeds 15 chars", tun)}
+		}
+		return TailnetConf{Name: req.Name, Domain: req.Domain, CIDR: cidr, TUN: tun}, nil
+	}()
+	if err != nil {
+		var ce clientError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusBadRequest, ce.msg)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	notice, err := d.applyConfigUpdate(func(c *Config) error {
+		c.Tailnets = append(c.Tailnets, tc)
+		return nil
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	res := map[string]string{"ok": "tailnet added and started — `login` next", "name": tc.Name, "cidr": tc.CIDR, "tun": tc.TUN}
+	if tc.Domain != "" {
+		res["domain"] = tc.Domain
+	}
+	if notice != "" {
+		res["ok"] += "; " + notice
+	}
+	writeJSON(w, res)
+}
+
+// handleRemoveTailnet stops a tailnet and drops it from the config. Node
+// state (login identity, selection pins) is kept under state_dir, so a later
+// re-add comes back up Running without a new browser login — deleting state
+// is a manual rm.
+func (d *Daemon) handleRemoveTailnet(w http.ResponseWriter, r *http.Request) {
+	name := strings.ToLower(r.PathValue("name"))
+	if _, err := func() (*TailnetConf, error) {
+		d.cfgMu.Lock()
+		defer d.cfgMu.Unlock()
+		cfg, err := loadConfig(d.cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		if confByName(cfg, name) == nil {
+			return nil, clientError{fmt.Sprintf("no such tailnet %q", name)}
+		}
+		return nil, nil
+	}(); err != nil {
+		var ce clientError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusNotFound, ce.msg)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	notice, err := d.applyConfigUpdate(func(c *Config) error {
+		c.Tailnets = slices.DeleteFunc(c.Tailnets, func(tc TailnetConf) bool {
+			return strings.EqualFold(tc.Name, name)
+		})
+		return nil
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok := "tailnet stopped and removed from config (node state kept)"
+	if notice != "" {
+		ok += "; " + notice
+	}
+	writeJSON(w, map[string]string{"ok": ok})
+}
+
+// syntheticRange is the RFC 2544 benchmark space every per-tailnet range is
+// carved from — never seen in real traffic, so a plain route per TUN works.
+var syntheticRange = mustCIDR("198.18.0.0/15")
+
+func mustCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
+// checkCIDR validates a user-supplied cidr: IPv4, inside the synthetic range,
+// and not overlapping any configured tailnet's range.
+func checkCIDR(cidr string, cfg *Config) error {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil || ip.To4() == nil {
+		return fmt.Errorf("invalid IPv4 cidr %q", cidr)
+	}
+	if !syntheticRange.Contains(ipnet.IP) {
+		return fmt.Errorf("cidr %s is outside the synthetic range 198.18.0.0/15", cidr)
+	}
+	for _, tc := range cfg.Tailnets {
+		if _, used, err := net.ParseCIDR(tc.CIDR); err == nil && (used.Contains(ipnet.IP) || ipnet.Contains(used.IP)) {
+			return fmt.Errorf("cidr %s overlaps tailnet %q (%s)", cidr, tc.Name, tc.CIDR)
+		}
+	}
+	return nil
+}
+
+// nextFreeCIDR scans 198.18.0.0/15 for the first /24 no configured tailnet
+// uses, in the order the example documents (198.18.1.0/24, .2.0/24, …).
+func nextFreeCIDR(cfg *Config) (string, error) {
+	probe := &net.IPNet{IP: net.IPv4(198, 18, 1, 0).To4(), Mask: net.CIDRMask(24, 32)}
+	for i := 0; i < 512; i++ { // 198.18.1.0 .. 198.19.255.0 minus the broadcast-ish edges
+		if err := checkCIDR(probe.String(), cfg); err == nil {
+			return probe.String(), nil
+		}
+		probe.IP[2]++
+		if probe.IP[2] == 0 { // wrapped into the next /16
+			probe.IP[1]++
+		}
+	}
+	return "", fmt.Errorf("no free /24 left in 198.18.0.0/15")
+}
+
+// firstFreeTUN picks the first unused tsm<N> (kernel limit: 15 chars, so N
+// stays two digits).
+func firstFreeTUN(cfg *Config) (string, error) {
+	used := make(map[string]bool, len(cfg.Tailnets))
+	for _, tc := range cfg.Tailnets {
+		used[tc.TUN] = true
+	}
+	for n := 0; n < 100; n++ {
+		name := fmt.Sprintf("tsm%d", n)
+		if !used[name] {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("no free tsm<N> name")
 }
 
 // probePeers dials each online peer's ports over the tailnet, returning the open

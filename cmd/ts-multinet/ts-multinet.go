@@ -154,7 +154,7 @@ func main() {
 		return
 	}
 
-	reg, err := newRegistry(cfg.Tailnets)
+	reg, err := newRegistry(nil) // entries appear as tailnets start (syncTailnets)
 	if err != nil {
 		slog.Error("registry", "err", err)
 		os.Exit(1)
@@ -212,41 +212,36 @@ func main() {
 	base := orDefault(cfg.StateDir, ".state")
 
 	// The daemon exists before the tailnets so each one can fire its
-	// apply-selections callback the moment it reaches Running.
+	// apply-selections callback the moment it reaches Running. Startup is the
+	// same sync path the control API uses — a boot-time add and an API add
+	// are indistinguishable.
 	daemon := newDaemon(nil, reg, *flagConfig, orDefault(cfg.HostsFile, "/etc/hosts"))
-
-	var nets []*Tailnet
-	for _, tc := range cfg.Tailnets {
-		if !tc.enabled() {
-			slog.Info("tailnet disabled, skipping", "name", tc.Name)
-			continue
-		}
-		tn, err := startTailnet(ctx, tc, reg, mtu, base, daemon.applySelections, rs)
-		if err != nil {
-			slog.Error("tailnet start failed", "name", tc.Name, "err", err)
-			cancel()
-			os.Exit(1)
-		}
-		nets = append(nets, tn)
+	daemon.rt.ctx = ctx
+	daemon.rt.mtu = mtu
+	daemon.rt.baseDir = base
+	daemon.rt.rs = rs
+	if err := daemon.syncTailnets(cfg); err != nil {
+		slog.Error("tailnet start failed", "err", err)
+		cancel()
+		os.Exit(1)
 	}
-	daemon.setTailnets(nets)
-	slog.Info("all tailnets up", "count", len(nets))
+	slog.Info("tailnets up", "count", len(daemon.liveTailnets()))
 
 	go daemon.serveControl(ctx, *flagSock)
 	go serveUI(ctx, daemon, orDefault(cfg.UIListen, "127.0.0.1:8123"))
 
-	// SIGHUP reloads selection config and rewrites the hosts block.
+	// SIGHUP reloads the config file and syncs tailnets to it.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
 		for range hup {
-			daemon.reload()
+			slog.Info("reload", "msg", daemon.reload())
 		}
 	}()
 
 	<-ctx.Done()
 	slog.Info("shutting down")
-	for _, tn := range nets {
+	for _, tn := range daemon.liveTailnets() {
 		tn.Close()
 	}
 	rs.revertAll()
@@ -269,8 +264,9 @@ usage:
   ts-multinet [flags] config                        print the effective config
 
 (every verb above talks to the running daemon over its control socket; only a
-bare "ts-multinet" invocation runs the daemon itself. Structural changes —
-adding tailnets, editing cidr/tun — still need a config edit + restart.)
+bare "ts-multinet" invocation runs the daemon itself. Config edits — tailnets
+included — apply live via 'reload'; only globals (mtu, dns_listen,
+upstream_dns, state_dir, hosts_file, ui_listen) need a service restart.)
 
 flags:
 `)
@@ -298,9 +294,9 @@ func parseConfig(b []byte, path string) (*Config, error) {
 	if err := json.Unmarshal(std, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if len(c.Tailnets) == 0 {
-		return nil, fmt.Errorf("config has no tailnets")
-	}
+	// Zero tailnets is valid: the daemon comes up with just the control
+	// socket and web UI, and tailnets are added at runtime (startup uses the
+	// same sync path). Each entry that does exist must be complete.
 	for i, tc := range c.Tailnets {
 		if tc.Name == "" || tc.CIDR == "" || tc.TUN == "" {
 			return nil, fmt.Errorf("tailnet[%d]: name, cidr, tun are all required (suffix is auto-detected if omitted; login is via `ts-multinet login %s`)", i, tc.Name)

@@ -99,6 +99,24 @@ func (s *resolvedSync) revertAll() {
 	}
 }
 
+// revert returns one interface to its pre-daemon DNS config — the per-TUN
+// counterpart of revertAll, used when a single tailnet stops at runtime.
+func (s *resolvedSync) revert(dev string) {
+	if s == nil || !s.enabled || dev == "" {
+		return
+	}
+	s.mu.Lock()
+	if _, ok := s.registered[dev]; !ok {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.registered, dev)
+	s.mu.Unlock()
+	if err := resolvectl("revert", dev); err != nil {
+		slog.Warn("resolvectl revert failed", "dev", dev, "err", err)
+	}
+}
+
 func resolvectl(args ...string) error {
 	out, err := exec.Command("resolvectl", args...).CombinedOutput()
 	if err != nil {

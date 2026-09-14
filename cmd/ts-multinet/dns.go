@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,12 +33,16 @@ type registry struct {
 }
 
 type tnEntry struct {
-	name   string // friendly name, e.g. "skynet" — also accepted as an alias suffix
-	domain string // friendly DNS suffix, e.g. "skynet" or a custom "lan"; defaults to name
-	suffix string // real MagicDNS suffix, e.g. "tail523555.ts.net"; "" until detected
+	name   string     // friendly name, e.g. "skynet" — also accepted as an alias suffix
+	domain string     // friendly DNS suffix, e.g. "skynet" or a custom "lan"; defaults to name
+	suffix string     // real MagicDNS suffix, e.g. "tail523555.ts.net"; "" until detected
+	ipnet  *net.IPNet // the synthetic range, so removal can scrub exactly this tailnet's IPs
 	alloc  *allocator
 }
 
+// newRegistry builds an empty registry plus entries for the given tailnets —
+// the startup convenience; runtime adds go through add/remove as tailnets
+// start and stop (syncTailnets uses the same path).
 func newRegistry(tailnets []TailnetConf) (*registry, error) {
 	r := &registry{
 		byName:    make(map[string]net.IP),
@@ -45,21 +50,72 @@ func newRegistry(tailnets []TailnetConf) (*registry, error) {
 		resolvers: make(map[string]resolveFunc),
 	}
 	for _, tc := range tailnets {
-		a, err := newAllocator(tc.CIDR)
-		if err != nil {
-			return nil, fmt.Errorf("tailnet %q: %w", tc.Name, err)
+		if err := r.add(tc); err != nil {
+			return nil, err
 		}
-		if _, ipnet, err := net.ParseCIDR(tc.CIDR); err == nil {
-			r.cidrs = append(r.cidrs, ipnet)
-		}
-		r.entries = append(r.entries, &tnEntry{
-			name:   strings.ToLower(tc.Name),
-			domain: strings.ToLower(tc.domainName()),
-			suffix: strings.TrimSuffix(strings.ToLower(tc.Suffix), "."),
-			alloc:  a,
-		})
 	}
 	return r, nil
+}
+
+// add registers a tailnet's synthetic range for DNS matching and IP
+// allocation. Starting a tailnet adds its entry; stopping removes it, so a
+// duplicate name is an error, not an upsert.
+func (r *registry) add(tc TailnetConf) error {
+	a, err := newAllocator(tc.CIDR)
+	if err != nil {
+		return fmt.Errorf("tailnet %q: %w", tc.Name, err)
+	}
+	_, ipnet, err := net.ParseCIDR(tc.CIDR)
+	if err != nil {
+		return fmt.Errorf("tailnet %q: %w", tc.Name, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := strings.ToLower(tc.Name)
+	for _, e := range r.entries {
+		if e.name == name {
+			return fmt.Errorf("tailnet %q is already registered", tc.Name)
+		}
+	}
+	r.entries = append(r.entries, &tnEntry{
+		name:   name,
+		domain: strings.ToLower(tc.domainName()),
+		suffix: strings.TrimSuffix(strings.ToLower(tc.Suffix), "."),
+		ipnet:  ipnet,
+		alloc:  a,
+	})
+	r.cidrs = append(r.cidrs, ipnet)
+	return nil
+}
+
+// remove drops a tailnet entirely: entry, resolver, cidr guard, and every
+// synthetic IP it allocated (stale hosts-block or resolver caches can't be
+// re-pointed at a different tailnet's hosts by a later re-add of the range).
+func (r *registry) remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name = strings.ToLower(name)
+	var gone *net.IPNet
+	entries := r.entries[:0]
+	for _, e := range r.entries {
+		if e.name == name {
+			gone = e.ipnet
+			continue
+		}
+		entries = append(entries, e)
+	}
+	r.entries = entries
+	if gone == nil {
+		return
+	}
+	r.cidrs = slices.DeleteFunc(r.cidrs, func(n *net.IPNet) bool { return n.String() == gone.String() })
+	delete(r.resolvers, name)
+	for ipStr, fqdn := range r.byIP {
+		if gone.Contains(net.ParseIP(ipStr)) {
+			delete(r.byIP, ipStr)
+			delete(r.byName, fqdn)
+		}
+	}
 }
 
 // registerSuffix records the real MagicDNS suffix for a tailnet, typically

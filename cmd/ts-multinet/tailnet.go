@@ -37,6 +37,7 @@ type Tailnet struct {
 	assignedIP string
 	resolve    resolveFunc
 	resolved   *resolvedSync // systemd-resolved registration; nil in tests
+	cancel     func()        // cancels this tailnet's ctx (watcher + forwarder)
 
 	mu       sync.Mutex
 	state    string // ipnstate backend state: NeedsLogin, Running, …
@@ -107,16 +108,21 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 
 	resolve := newTailnetResolver(lc)
 	reg.registerResolver(conf.Name, resolve)
-	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolve: resolve, resolved: rs}
+
+	// Per-tailnet ctx so one tailnet can stop without touching the others:
+	// the watcher and the forwarder both exit on its cancel. All the fallible
+	// setup is above, so a failed start never leaks a goroutine pair.
+	tctx, cancel := context.WithCancel(ctx)
+	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolve: resolve, resolved: rs, cancel: cancel}
 
 	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, resolve, newPinger(lc))
 	go func() {
-		if err := fwd.run(ctx); err != nil && ctx.Err() == nil {
+		if err := fwd.run(tctx); err != nil && tctx.Err() == nil {
 			slog.Error("forwarder exited", "name", conf.Name, "err", err)
 		}
 	}()
 
-	go tn.watch(ctx, reg, onRunning)
+	go tn.watch(tctx, reg, onRunning)
 	slog.Info("tailnet up", "name", conf.Name, "tun", dev, "cidr", conf.CIDR, "suffix", orDefault(suffix, "(auto)"))
 	return tn, nil
 }
@@ -252,7 +258,13 @@ func newTailnetResolver(lc *local.Client) resolveFunc {
 	}
 }
 
+// Close stops the tailnet: cancel its goroutines, then the TUN (the kernel
+// drops the link and its route) and the tsnet node. Safe to call twice and
+// on test stubs (nil fields, no cancel).
 func (t *Tailnet) Close() {
+	if t.cancel != nil {
+		t.cancel()
+	}
 	if t.tun != nil {
 		t.tun.Close()
 	}
