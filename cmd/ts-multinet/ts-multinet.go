@@ -34,12 +34,14 @@ type Config struct {
 	UpstreamDNS string        `json:"upstream_dns,omitempty"` // for non-tailnet names; default: first nameserver in /etc/resolv.conf, else 1.1.1.1
 	StateDir    string        `json:"state_dir,omitempty"`    // base dir for per-tailnet tsnet state; default .state
 	HostsFile   string        `json:"hosts_file,omitempty"`   // managed-block target; default /etc/hosts
+	UIListen    string        `json:"ui_listen,omitempty"`    // web UI listener; default 127.0.0.1:8123
 	Tailnets    []TailnetConf `json:"tailnets"`
 }
 
 type TailnetConf struct {
 	Name      string   `json:"name"`                // short id, used for state dir + hostname
 	Suffix    string   `json:"suffix"`              // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
+	Domain    string   `json:"domain,omitempty"`    // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
 	CIDR      string   `json:"cidr"`                // synthetic range, e.g. "198.18.1.0/24"
 	TUN       string   `json:"tun"`                 // TUN device name (<=15 chars)
 	Enabled   *bool    `json:"enabled,omitempty"`   // default true
@@ -50,6 +52,12 @@ type TailnetConf struct {
 
 func (tc TailnetConf) enabled() bool {
 	return tc.Enabled == nil || *tc.Enabled
+}
+
+// domainName is the friendly suffix short names resolve under (my-server.skynet):
+// the configured domain, else the tailnet name.
+func (tc TailnetConf) domainName() string {
+	return orDefault(tc.Domain, tc.Name)
 }
 
 // inContainer reports whether we're running inside a container netns (Docker
@@ -230,13 +238,20 @@ func loadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseConfig(b, path)
+}
+
+// parseConfig is loadConfig on bytes (also used to re-validate a patched
+// config before it is written).
+func parseConfig(b []byte, path string) (*Config, error) {
 	// HuJSON: // comments and trailing commas are allowed, so the config can
 	// document itself (config.example.jsonc is written that way).
-	if b, err = hujson.Standardize(b); err != nil {
+	std, err := hujson.Standardize(b)
+	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := json.Unmarshal(std, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if len(c.Tailnets) == 0 {

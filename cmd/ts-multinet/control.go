@@ -6,11 +6,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,10 +36,37 @@ type Daemon struct {
 	reg       *registry
 	cfgPath   string
 	hostsFile string
+
+	// cfgMu serializes config mutations so concurrent control requests
+	// can't lose updates; d.mu still guards the tailnet list itself.
+	cfgMu sync.Mutex
+
+	// peerShorts lists a tailnet's selectable peer short names. A field so
+	// control tests can stub the live tsnet status.
+	peerShorts func(ctx context.Context, tn *Tailnet) ([]string, error)
 }
 
 func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
-	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile}
+	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts}
+}
+
+// livePeerShorts is the production peerShorts: live status, Mullvad exits
+// filtered out, names shortened to what `peers` and selection use.
+func livePeerShorts(ctx context.Context, tn *Tailnet) ([]string, error) {
+	st, err := tn.lc.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range st.Peer {
+		if isMullvad(p.DNSName) {
+			continue
+		}
+		if s := shortName(p.DNSName, tn.suffix); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 func (d *Daemon) setTailnets(nets []*Tailnet) {
@@ -113,16 +144,13 @@ func (d *Daemon) applySelections() {
 
 // confFor returns the current on-disk config for a tailnet, falling back to
 // the daemon-start snapshot if the file is unreadable.
+// confFor returns the current on-disk config for a tailnet, falling back to
+// the daemon-start snapshot if the file is unreadable. loadConfig (not raw
+// Unmarshal) so commented configs parse.
 func (d *Daemon) confFor(name string) TailnetConf {
-	b, err := os.ReadFile(d.cfgPath)
-	if err == nil {
-		var c Config
-		if json.Unmarshal(b, &c) == nil {
-			for _, tc := range c.Tailnets {
-				if tc.Name == name {
-					return tc
-				}
-			}
+	if c, err := loadConfig(d.cfgPath); err == nil {
+		if tc := confByName(c, name); tc != nil {
+			return *tc
 		}
 	}
 	for _, tn := range d.tailnets {
@@ -131,6 +159,63 @@ func (d *Daemon) confFor(name string) TailnetConf {
 		}
 	}
 	return TailnetConf{Name: name}
+}
+
+// confByName finds a tailnet's conf by name.
+func confByName(c *Config, name string) *TailnetConf {
+	for i := range c.Tailnets {
+		if c.Tailnets[i].Name == name {
+			return &c.Tailnets[i]
+		}
+	}
+	return nil
+}
+
+// cloneConfig deep-copies c through a JSON round trip — enough to diff
+// against the patched result.
+func cloneConfig(c *Config) (*Config, error) {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+	var out Config
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// applyConfigUpdate is the one path by which the daemon edits its config: fn
+// mutates a parsed copy, the file is rewritten comment-preserving (hujson
+// AST), the in-memory confs are swapped, and selections re-apply (hosts
+// block, synthetic IPs). Manual edits keep working — the file is re-read on
+// every update; structural changes still need a restart.
+func (d *Daemon) applyConfigUpdate(fn func(*Config) error) error {
+	d.cfgMu.Lock()
+	defer d.cfgMu.Unlock()
+	cfg, err := loadConfig(d.cfgPath)
+	if err != nil {
+		return err
+	}
+	prev, err := cloneConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if err := fn(cfg); err != nil {
+		return err
+	}
+	if err := patchConfigFile(d.cfgPath, prev, cfg); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	for _, tn := range d.tailnets {
+		if tc := confByName(cfg, tn.conf.Name); tc != nil {
+			tn.conf = *tc
+		}
+	}
+	d.mu.Unlock()
+	d.applySelections()
+	return nil
 }
 
 // reload re-applies selections from the current config file and rewrites the
@@ -181,6 +266,31 @@ type checkJSON struct {
 	Banner     string `json:"banner"`
 }
 
+func (d *Daemon) tailnetNames() []string {
+	out := make([]string, 0, len(d.tailnets))
+	for _, tn := range d.tailnets {
+		out = append(out, tn.conf.Name)
+	}
+	return out
+}
+
+// controlMux builds the control API routes — shared by the unix socket and
+// any other listener (web UI).
+func (d *Daemon) controlMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /status", d.handleStatus)
+	mux.HandleFunc("GET /peers", d.handlePeers)
+	mux.HandleFunc("GET /check", d.handleCheck)
+	mux.HandleFunc("GET /config", d.handleConfig)
+	mux.HandleFunc("POST /login", d.handleLogin)
+	mux.HandleFunc("POST /reload", d.handleReload)
+	mux.HandleFunc("POST /tailnet/{name}/select", d.handleSelect)
+	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
+	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
+	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
+	return mux
+}
+
 // serveControl runs the unix-socket control API until ctx is cancelled.
 func (d *Daemon) serveControl(ctx context.Context, sockPath string) {
 	if err := os.MkdirAll(filepath.Dir(sockPath), 0755); err != nil {
@@ -195,13 +305,7 @@ func (d *Daemon) serveControl(ctx context.Context, sockPath string) {
 	}
 	os.Chmod(sockPath, 0660)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /status", d.handleStatus)
-	mux.HandleFunc("GET /peers", d.handlePeers)
-	mux.HandleFunc("GET /check", d.handleCheck)
-	mux.HandleFunc("POST /login", d.handleLogin)
-	mux.HandleFunc("POST /reload", d.handleReload)
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: d.controlMux()}
 	go func() { <-ctx.Done(); srv.Close(); os.Remove(sockPath) }()
 
 	slog.Info("control socket up", "path", sockPath)
@@ -361,9 +465,10 @@ func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	d.mu.Lock()
 	tn := d.tailnetByName(req.Tailnet)
+	known := d.tailnetNames()
 	d.mu.Unlock()
 	if tn == nil {
-		writeJSON(w, loginResult{Tailnet: req.Tailnet, Error: "no such tailnet"})
+		writeJSON(w, loginResult{Tailnet: req.Tailnet, Error: "no such tailnet (known: " + strings.Join(known, ", ") + ")"})
 		return
 	}
 	state, _ := tn.status()
@@ -404,6 +509,139 @@ func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
 	msg := d.reload()
 	writeJSON(w, map[string]string{"ok": msg})
+}
+
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	w.WriteHeader(code)
+	writeJSON(w, map[string]string{"error": msg})
+}
+
+// handleConfig returns the effective on-disk config — the file is the source
+// of truth and is re-read on every query.
+func (d *Daemon) handleConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := loadConfig(d.cfgPath)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, cfg)
+}
+
+// selectionReq is the shared body of the mutation endpoints (each uses the
+// field it needs; the rest must be absent or zero).
+type selectionReq struct {
+	Peer   string `json:"peer"`
+	On     *bool  `json:"on"`
+	Domain string `json:"domain"`
+}
+
+// clientError marks a request-level problem (unknown peer, bad domain) so
+// updateTailnet maps it to 400 instead of 500.
+type clientError struct{ msg string }
+
+func (e clientError) Error() string { return e.msg }
+
+// updateTailnet is the common flow of the /tailnet/{name}/* mutations:
+// resolve the tailnet, list its selectable peers, hand the mutable conf to
+// fn, and commit through applyConfigUpdate (comment-preserving write +
+// re-apply). Peer and domain problems are rejected before anything is
+// written.
+func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, fn func(req selectionReq, tc *TailnetConf, peers []string) error) {
+	name := r.PathValue("name")
+	var req selectionReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	d.mu.Lock()
+	tn := d.tailnetByName(name)
+	known := d.tailnetNames()
+	d.mu.Unlock()
+	if tn == nil {
+		writeErr(w, http.StatusNotFound, "no such tailnet (known: "+strings.Join(known, ", ")+")")
+		return
+	}
+	peers, err := d.peerShorts(r.Context(), tn)
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "tailnet status unavailable: "+err.Error())
+		return
+	}
+	if err := d.applyConfigUpdate(func(c *Config) error {
+		tc := confByName(c, name)
+		if tc == nil {
+			return fmt.Errorf("tailnet %q vanished from config", name)
+		}
+		return fn(req, tc, peers)
+	}); err != nil {
+		var ce clientError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusBadRequest, ce.msg)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"ok": "config updated; selections re-applied"})
+}
+
+// handleSelect adds a peer to the tailnet's resources. The peer must be a
+// live, non-Mullvad peer — the same names `peers` and selection use.
+func (d *Daemon) handleSelect(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.Peer == "" {
+			return clientError{"peer is required"}
+		}
+		if !slices.Contains(peers, req.Peer) {
+			return clientError{fmt.Sprintf("unknown peer %q (peers: %s)", req.Peer, strings.Join(peers, ", "))}
+		}
+		if !slices.Contains(tc.Resources, req.Peer) {
+			tc.Resources = append(tc.Resources, req.Peer)
+		}
+		return nil
+	})
+}
+
+// handleForget removes a peer from resources (any name — stale entries can
+// be cleaned up even when the peer is gone).
+func (d *Daemon) handleForget(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.Peer == "" {
+			return clientError{"peer is required"}
+		}
+		tc.Resources = slices.DeleteFunc(tc.Resources, func(s string) bool { return s == req.Peer })
+		return nil
+	})
+}
+
+// handleAllowAll toggles selecting every non-Mullvad peer.
+func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.On == nil {
+			return clientError{"body must be {\"on\": true|false}"}
+		}
+		tc.AllowAll = *req.On
+		return nil
+	})
+}
+
+// handleDomain sets the tailnet's friendly DNS suffix (my-server.<domain>);
+// an empty string removes the override, falling back to the tailnet name.
+func (d *Daemon) handleDomain(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.Domain != "" && !validDomain(req.Domain) {
+			return clientError{fmt.Sprintf("invalid domain %q: lowercase labels of [a-z0-9-], 1-63 chars each, 253 total", req.Domain)}
+		}
+		tc.Domain = req.Domain
+		return nil
+	})
+}
+
+// domainRE matches a lowercase DNS name: labels of 1-63 [a-z0-9-] that
+// neither start nor end with a hyphen, dot-separated.
+var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
+
+func validDomain(s string) bool {
+	return len(s) <= 253 && domainRE.MatchString(s)
 }
 
 // probePeers dials each online peer's ports over the tailnet, returning the open
