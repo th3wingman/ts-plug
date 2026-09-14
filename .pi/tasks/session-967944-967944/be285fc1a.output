@@ -1,0 +1,307 @@
+2026/09/14 22:56:11 tsnet running state path /tmp/tsm-probe-state/tailscaled.state
+2026/09/14 22:56:11 tsnet starting with hostname "tsm-probe", varRoot "/tmp/tsm-probe-state"
+2026/09/14 22:56:11 LocalBackend state is NeedsLogin; running StartLoginInteractive...
+22:56:11 state: NeedsLogin url: 
+22:56:13 state: NeedsLogin url: 
+22:56:15 state: NeedsLogin url: 
+22:56:17 state: NeedsLogin url: 
+22:56:19 state: NeedsLogin url: 
+22:56:21 state: NeedsLogin url: 
+22:56:23 state: NeedsLogin url: 
+22:56:25 state: NeedsLogin url: 
+22:56:27 state: NeedsLogin url: 
+22:56:29 state: NeedsLogin url: 
+22:56:31 state: NeedsLogin url: 
+22:56:33 state: NeedsLogin url: 
+22:56:35 state: NeedsLogin url: 
+22:56:37 state: NeedsLogin url: 
+22:56:39 state: NeedsLogin url: 
+22:56:41 state: NeedsLogin url: 
+22:56:43 state: NeedsLogin url: 
+22:56:45 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:56:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:56:47 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:56:49 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:56:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:56:51 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:56:53 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:56:55 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:56:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:56:57 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:56:59 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:01 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:03 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:05 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:07 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:09 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:11 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:13 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:15 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:17 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:19 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:21 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:23 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:25 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:27 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:29 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:31 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:31 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:33 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:35 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:36 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:37 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:39 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:41 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:41 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:43 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:45 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:47 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:49 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:51 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:53 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:55 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:57:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:57:57 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:57:59 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:01 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:03 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:05 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:07 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:09 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:11 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:13 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:15 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:17 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:19 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:21 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:23 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:25 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:27 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:29 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:31 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:31 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:33 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:35 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:36 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:37 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:39 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:41 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:41 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:43 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:45 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:47 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:49 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:51 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:53 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:55 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:58:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:58:57 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:58:59 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:01 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:03 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:05 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:07 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:09 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:11 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:13 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:15 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:17 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:19 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:21 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:23 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:25 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:27 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:29 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:31 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:31 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:33 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:35 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:36 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:37 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:39 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:41 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:41 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:43 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:45 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:47 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:49 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:51 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:53 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:55 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 22:59:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+22:59:57 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+22:59:59 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:01 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:03 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:05 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:07 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:09 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:11 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:13 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:15 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:17 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:19 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:21 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:23 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:25 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:27 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:29 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:31 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:31 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:33 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:35 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:36 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:37 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:39 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:41 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:41 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:43 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:45 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:47 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:49 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:51 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:53 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:55 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:00:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:00:57 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:00:59 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:01 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:03 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:05 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:07 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:09 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:11 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:13 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:15 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:17 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:19 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:21 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:23 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:25 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:27 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:29 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:31 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:31 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:33 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:35 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:36 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:37 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:39 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:41 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:41 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:43 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:45 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:47 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:49 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:51 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:53 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:55 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:01:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:01:57 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:01:59 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:01 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:03 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:05 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:07 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:09 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:11 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:13 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:15 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:17 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:19 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:21 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:23 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:25 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:27 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:29 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:31 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:31 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:33 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:35 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:36 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:37 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:39 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:41 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:41 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:43 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:45 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:47 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:49 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:51 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:53 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:55 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:02:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:02:57 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:02:59 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:03:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:03:01 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:03 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:05 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:03:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:03:07 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:09 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:03:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:03:11 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:13 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:15 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:03:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:03:17 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:19 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:03:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:03:21 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:23 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:25 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:03:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b2295bd01d198
+23:03:27 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+23:03:29 state: NeedsLogin url: https://login.tailscale.com/a/b2295bd01d198
+2026/09/14 23:03:29 AuthLoop: state is Starting; done
+23:03:31 state: Running url: 
+PROBE RUNNING — login completed. IPs: [100.127.4.72 fd7a:115c:a1e0::783b:449]

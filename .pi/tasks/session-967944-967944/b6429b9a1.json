@@ -1,0 +1,18 @@
+{
+  "id": "b6429b9a1",
+  "name": "skynet state watch",
+  "command": "for i in $(seq 1 300); do s=$(curl -s --max-time 2 http://127.0.0.1:8123/status | grep -o '\"state\":\"[^\"]*\"' | head -1); case \"$s\" in *NeedsLogin*) sleep 2 ;; *) echo \"STATE CHANGED: $s at $(date +%T)\"; exit 0 ;; esac; done; echo \"still NeedsLogin after 10min at $(date +%T)\"",
+  "status": "completed",
+  "outputPath": ".pi/tasks/session-967944-967944/b6429b9a1.output",
+  "cwd": "/home/greg/github/th3wingman/ts-plug",
+  "startTime": 1789418112198,
+  "endTime": 1789418718706,
+  "exitCode": 0,
+  "signal": null,
+  "pid": 1055297,
+  "bytesWritten": 41,
+  "isAgent": false,
+  "notified": true,
+  "notifyOnCompletion": true,
+  "triggerOnCompletion": true
+}

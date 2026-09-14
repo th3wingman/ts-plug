@@ -60,6 +60,12 @@ async function refresh() {
     state.status = status || [];
     state.peers = peers || [];
     state.config = config;
+    // login messages are stale once the tailnet is actually Running
+    for (const s of state.status) {
+      if (s.state === "Running" && state.cardMsgs[s.name]?.kind === "info") {
+        delete state.cardMsgs[s.name];
+      }
+    }
     $("#offline-banner").hidden = true;
   } catch {
     $("#offline-banner").hidden = false; // keep last data on screen
@@ -313,14 +319,6 @@ function renderDashboard() {
             onclick: () => doLogin(s.name),
           },
           "Login",
-        ),
-      );
-    } else if (s.login_url) {
-      actions.append(
-        h(
-          "a",
-          { href: s.login_url, target: "_blank", rel: "noopener" },
-          "pending login URL",
         ),
       );
     }

@@ -1,0 +1,18 @@
+{
+  "id": "bf1ba5dfb",
+  "name": "probe url watch",
+  "command": "for i in $(seq 1 300); do if grep -q 'url: https://' .pi/tasks/session-967944-967944/be285fc1a.output 2>/dev/null; then grep 'url: https://' .pi/tasks/session-967944-967944/be285fc1a.output | head -1; exit 0; fi; if grep -q 'PROBE RUNNING' .pi/tasks/session-967944-967944/be285fc1a.output 2>/dev/null; then echo \"PROBE RUNNING WITHOUT NEW AUTH (state persisted!)\"; exit 0; fi; sleep 3; done; echo \"no url after 15min\"; tail -3 .pi/tasks/session-967944-967944/be285fc1a.output",
+  "status": "completed",
+  "outputPath": ".pi/tasks/session-967944-967944/bf1ba5dfb.output",
+  "cwd": "/home/greg/github/th3wingman/ts-plug",
+  "startTime": 1789419429842,
+  "endTime": 1789419429866,
+  "exitCode": 0,
+  "signal": null,
+  "pid": 1067942,
+  "bytesWritten": 76,
+  "isAgent": false,
+  "notified": true,
+  "notifyOnCompletion": true,
+  "triggerOnCompletion": true
+}
