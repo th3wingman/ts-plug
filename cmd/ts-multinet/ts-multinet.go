@@ -198,6 +198,7 @@ func main() {
 	slog.Info("all tailnets up", "count", len(nets))
 
 	go daemon.serveControl(ctx, *flagSock)
+	go serveUI(ctx, daemon, orDefault(cfg.UIListen, "127.0.0.1:8123"))
 
 	// SIGHUP reloads selection config and rewrites the hosts block.
 	hup := make(chan os.Signal, 1)
