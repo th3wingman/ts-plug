@@ -258,7 +258,7 @@ func (d *Daemon) confFor(name string) TailnetConf {
 // confByName finds a tailnet's conf by name.
 func confByName(c *Config, name string) *TailnetConf {
 	for i := range c.Tailnets {
-		if c.Tailnets[i].Name == name {
+		if strings.EqualFold(c.Tailnets[i].Name, name) {
 			return &c.Tailnets[i]
 		}
 	}
@@ -417,6 +417,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
+	mux.HandleFunc("POST /tailnet/{name}/hostname", d.handleHostname)
 	mux.HandleFunc("POST /tailnet", d.handleAddTailnet)
 	mux.HandleFunc("DELETE /tailnet/{name}", d.handleRemoveTailnet)
 	return mux
@@ -673,9 +674,10 @@ func (d *Daemon) handleConfig(w http.ResponseWriter, r *http.Request) {
 // selectionReq is the shared body of the mutation endpoints (each uses the
 // field it needs; the rest must be absent or zero).
 type selectionReq struct {
-	Peer   string `json:"peer"`
-	On     *bool  `json:"on"`
-	Domain string `json:"domain"`
+	Peer     string `json:"peer"`
+	On       *bool  `json:"on"`
+	Domain   string `json:"domain"`
+	Hostname string `json:"hostname"`
 }
 
 // clientError marks a request-level problem (unknown peer, bad domain) so
@@ -784,12 +786,62 @@ func (d *Daemon) handleDomain(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleHostname sets the node name reported inside the tailnet (default
+// ts-multinet-<slug>). Applying it restarts just that tailnet — node state
+// persists, so no new browser login.
+func (d *Daemon) handleHostname(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.Hostname != "" && !validDomain(req.Hostname) {
+			return clientError{fmt.Sprintf("invalid hostname %q: lowercase labels of [a-z0-9-], 1-63 chars each", req.Hostname)}
+		}
+		tc.Hostname = req.Hostname
+		return nil
+	})
+}
+
 // domainRE matches a lowercase DNS name: labels of 1-63 [a-z0-9-] that
 // neither start nor end with a hyphen, dot-separated.
 var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
 
 func validDomain(s string) bool {
 	return len(s) <= 253 && domainRE.MatchString(s)
+}
+
+// validTailnetName accepts any printable name that is safe as a state-dir
+// path component and a URL segment. DNS-safety is not required here: the
+// friendly domain and the node hostname are derived via slugify.
+func validTailnetName(s string) bool {
+	if s == "" || len(s) > 63 || s == "." || s == ".." {
+		return false
+	}
+	return !strings.ContainsAny(s, "/\\\x00\n\r\t")
+}
+
+// slugify derives a DNS-safe label from a free-form tailnet name: anything
+// that isn't [a-z0-9] becomes '-', runs collapse, edges trim, empty → "tailnet".
+func slugify(s string) string {
+	var b strings.Builder
+	hyphen := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			b.WriteRune(r)
+			hyphen = false
+		default:
+			if !hyphen {
+				b.WriteByte('-')
+				hyphen = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 63 { // slug output is pure ASCII, so a byte slice is safe
+		out = strings.Trim(out[:63], "-")
+	}
+	if out == "" {
+		return "tailnet"
+	}
+	return out
 }
 
 // handleAddTailnet adds a tailnet at runtime: cidr/tun are optional and
@@ -799,22 +851,27 @@ func validDomain(s string) bool {
 // `ts-multinet login <name>` or the web UI's login button.
 func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name   string `json:"name"`
-		CIDR   string `json:"cidr"`
-		TUN    string `json:"tun"`
-		Domain string `json:"domain"`
+		Name     string `json:"name"`
+		CIDR     string `json:"cidr"`
+		TUN      string `json:"tun"`
+		Domain   string `json:"domain"`
+		Hostname string `json:"hostname"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
 		writeErr(w, http.StatusBadRequest, "body must be {\"name\": \"...\", \"cidr\"?, \"tun\"?, \"domain\"?}")
 		return
 	}
-	req.Name = strings.ToLower(strings.TrimSpace(req.Name))
-	if !validDomain(req.Name) {
-		writeErr(w, http.StatusBadRequest, "invalid name "+strconv.Quote(req.Name)+": lowercase labels of [a-z0-9-], 1-63 chars each")
+	req.Name = strings.TrimSpace(req.Name) // casing is kept — the name is an identity label, not a DNS label
+	if !validTailnetName(req.Name) {
+		writeErr(w, http.StatusBadRequest, "invalid name "+strconv.Quote(req.Name)+": printable, no slashes, 1-63 chars — a DNS-safe domain and node hostname are generated from it")
 		return
 	}
 	if req.Domain != "" && !validDomain(req.Domain) {
 		writeErr(w, http.StatusBadRequest, "invalid domain "+strconv.Quote(req.Domain))
+		return
+	}
+	if req.Hostname != "" && !validDomain(req.Hostname) {
+		writeErr(w, http.StatusBadRequest, "invalid hostname "+strconv.Quote(req.Hostname)+": lowercase labels of [a-z0-9-], 1-63 chars each")
 		return
 	}
 
@@ -844,7 +901,11 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 		} else if len(tun) > 15 {
 			return TailnetConf{}, clientError{fmt.Sprintf("tun name %q exceeds 15 chars", tun)}
 		}
-		return TailnetConf{Name: req.Name, Domain: req.Domain, CIDR: cidr, TUN: tun}, nil
+		domain := req.Domain
+		if domain == "" {
+			domain = slugify(req.Name) // pre-populate the friendly suffix; still editable
+		}
+		return TailnetConf{Name: req.Name, CIDR: cidr, TUN: tun, Domain: domain, Hostname: req.Hostname}, nil
 	}()
 	if err != nil {
 		var ce clientError
@@ -879,7 +940,7 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 // re-add comes back up Running without a new browser login — deleting state
 // is a manual rm.
 func (d *Daemon) handleRemoveTailnet(w http.ResponseWriter, r *http.Request) {
-	name := strings.ToLower(r.PathValue("name"))
+	name := r.PathValue("name")
 	if _, err := func() (*TailnetConf, error) {
 		d.cfgMu.Lock()
 		defer d.cfgMu.Unlock()

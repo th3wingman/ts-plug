@@ -170,7 +170,7 @@ func TestAddTailnetValidation(t *testing.T) {
 		body string
 		want string
 	}{
-		{`{"name": "Bad Name"}`, "invalid name"},
+		{`{"name": "../etc"}`, "invalid name"},
 		{`{"name": "dev"}`, "already exists"},
 		{`{"name": "corp", "cidr": "10.0.0.0/24"}`, "outside the synthetic range"},
 		{`{"name": "corp", "cidr": "198.18.1.0/24"}`, "overlaps"},
@@ -183,6 +183,11 @@ func TestAddTailnetValidation(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), c.want) {
 			t.Errorf("POST /tailnet %s: %d %s, want 400 containing %q", c.body, rec.Code, rec.Body.String(), c.want)
 		}
+	}
+	// free-form names are accepted; the domain is pre-populated with a slug
+	rec := doReq(t, d, "POST", "/tailnet", `{"name": "MS Infra 2"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"domain":"ms-infra-2"`) {
+		t.Errorf("POST /tailnet MS Infra 2: %d %s, want 200 with slugged domain", rec.Code, rec.Body.String())
 	}
 }
 

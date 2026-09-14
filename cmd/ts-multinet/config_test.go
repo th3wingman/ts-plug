@@ -20,15 +20,27 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 }
 
-// nodeHostname defaults to the historical ts-multinet-<name> scheme so
-// existing configs keep their admin-console device names.
+// nodeHostname defaults to a slug of the tailnet name (ts-multinet-<slug>)
+// so free-form names ("MS Infra") stay DNS-safe; an explicit hostname wins.
 func TestNodeHostnameDefault(t *testing.T) {
-	tc := TailnetConf{Name: "dev"}
-	if got := tc.nodeHostname(); got != "ts-multinet-dev" {
-		t.Fatalf("default hostname = %q", got)
+	for _, tt := range []struct{ name, want string }{
+		{"dev", "ts-multinet-dev"},
+		{"MS Infra", "ts-multinet-ms-infra"},
+		{"ms infra", "ts-multinet-ms-infra"},
+		{"Ünïcode / names!!", "ts-multinet-n-code-names"},
+	} {
+		if got := (TailnetConf{Name: tt.name}).nodeHostname(); got != tt.want {
+			t.Fatalf("nodeHostname(%q) = %q, want %q", tt.name, got, tt.want)
+		}
 	}
-	tc.Hostname = "xps13"
+	tc := TailnetConf{Name: "dev", Hostname: "xps13"}
 	if got := tc.nodeHostname(); got != "xps13" {
 		t.Fatalf("explicit hostname = %q", got)
+	}
+	if got := (TailnetConf{Name: "My Corp Net"}).domainName(); got != "my-corp-net" {
+		t.Fatalf("domainName fallback = %q", got)
+	}
+	if !validTailnetName("My Corp Net") || validTailnetName("../etc") || validTailnetName("") {
+		t.Fatal("validTailnetName is wrong")
 	}
 }

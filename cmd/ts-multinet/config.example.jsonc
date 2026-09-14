@@ -34,16 +34,17 @@
     // A hand-written entry, if you prefer files, looks like:
     //
     // {
-    //   "name": "example",              // short id — used by `login`/`peers`/`select <name> ...`
+    //   "name": "My Corp Net",          // any label you like — identity only (state dir, commands);
+    //   //                            // a DNS-safe domain and node hostname are generated from it
     //   "cidr": "198.18.1.0/24",        // synthetic range, unique per tailnet, out of 198.18.0.0/15;
     //   //                               // next tailnet takes 198.18.2.0/24, then .3.0/24, ...
     //   "tun": "tsm0",                  // TUN device name, <= 15 chars (kernel limit)
     //
     //   // optional:
     //   // "suffix": "example.ts.net",  // MagicDNS suffix; auto-detected when omitted
-    //   // "domain": "example",         // friendly DNS suffix (default: the tailnet name);
-    //   //                              // my-server.example and my-server.example.ts.net both resolve
-    //   // "hostname": "xps13",         // node name in this tailnet (default: ts-multinet-<name>);
+    //   // "domain": "my-corp-net",     // friendly DNS suffix (default: slug of the name);
+    //   //                              // my-server.my-corp-net and my-server.example.ts.net both resolve
+    //   // "hostname": "xps13",         // node name in this tailnet (default: ts-multinet-<slug>);
     //   // "enabled": false,            // default true; false skips this tailnet
     //   // "allow_all": true,           // select every peer instead of listing resources
     //   //                              // (shared Mullvad exit nodes are never selectable)

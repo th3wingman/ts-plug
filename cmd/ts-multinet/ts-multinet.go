@@ -57,13 +57,13 @@ func (tc TailnetConf) enabled() bool {
 
 // nodeHostname is the name this node reports inside its tailnet.
 func (tc TailnetConf) nodeHostname() string {
-	return orDefault(tc.Hostname, "ts-multinet-"+tc.Name)
+	return orDefault(tc.Hostname, "ts-multinet-"+slugify(tc.Name))
 }
 
 // domainName is the friendly suffix short names resolve under (my-server.skynet):
 // the configured domain, else the tailnet name.
 func (tc TailnetConf) domainName() string {
-	return orDefault(tc.Domain, tc.Name)
+	return orDefault(tc.Domain, slugify(tc.Name))
 }
 
 // inContainer reports whether we're running inside a container netns (Docker
@@ -150,6 +150,15 @@ func main() {
 				arg = args[2]
 			}
 			runDomainClient(*flagSock, tailnet, arg)
+		case "hostname":
+			tailnet, arg := "", ""
+			if len(args) >= 2 {
+				tailnet = args[1]
+			}
+			if len(args) >= 3 {
+				arg = args[2]
+			}
+			runHostnameClient(*flagSock, tailnet, arg)
 		case "config":
 			runConfigClient(*flagSock)
 		case "add":
@@ -283,6 +292,7 @@ usage:
   ts-multinet [flags] forget <tailnet> <peer>...   stop exposing peers
   ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
   ts-multinet [flags] domain <tailnet> [name|-]     set (or print) the friendly DNS suffix; - clears it
+  ts-multinet [flags] hostname <tailnet> [name|-]   set (or print) the node name in the tailnet; - clears it
   ts-multinet [flags] config                        print the effective config
   ts-multinet [flags] add <name> [cidr tun]         add a tailnet live (cidr/tun auto-picked when omitted)
   ts-multinet [flags] remove <name>                 stop a tailnet and drop it from config (node state kept)
@@ -324,6 +334,9 @@ func parseConfig(b []byte, path string) (*Config, error) {
 	for i, tc := range c.Tailnets {
 		if tc.Name == "" || tc.CIDR == "" || tc.TUN == "" {
 			return nil, fmt.Errorf("tailnet[%d]: name, cidr, tun are all required (suffix is auto-detected if omitted; login is via `ts-multinet login %s`)", i, tc.Name)
+		}
+		if !validTailnetName(tc.Name) {
+			return nil, fmt.Errorf("tailnet[%d]: invalid name %q (printable, no slashes, 1-63 chars)", i, tc.Name)
 		}
 		if len(tc.TUN) > 15 {
 			return nil, fmt.Errorf("tailnet[%d]: tun name %q exceeds 15 chars", i, tc.TUN)

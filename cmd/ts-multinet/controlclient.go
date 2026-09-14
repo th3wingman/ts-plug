@@ -191,7 +191,7 @@ func runRemoveClient(sock, name string) {
 		OK    string `json:"ok"`
 		Error string `json:"error"`
 	}
-	if err := controlDo(sock, http.MethodDelete, "/tailnet/"+name, nil, &res); err != nil {
+	if err := controlDo(sock, http.MethodDelete, "/tailnet/"+url.PathEscape(name), nil, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -249,6 +249,37 @@ func runReloadClient(sock string) {
 	fmt.Println(res["ok"])
 }
 
+// runHostnameClient sets the node name reported inside the tailnet (an
+// empty-string / "-" argument clears the override); with no argument it
+// prints the effective hostname.
+func runHostnameClient(sock, tailnet, arg string) {
+	if tailnet == "" {
+		fmt.Fprintln(os.Stderr, "usage: ts-multinet hostname <tailnet> [name|-]")
+		os.Exit(1)
+	}
+	if arg == "" || arg == "-" {
+		var cfg Config
+		if err := controlGet(sock, "/config", &cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for i := range cfg.Tailnets {
+			if strings.EqualFold(cfg.Tailnets[i].Name, tailnet) {
+				fmt.Println(cfg.Tailnets[i].nodeHostname())
+				if arg == "" {
+					return
+				}
+				break
+			}
+		}
+	}
+	if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/hostname", map[string]string{"hostname": arg}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("hostname set — the tailnet restarts to report it (no re-login)")
+}
+
 // mutate posts one /tailnet/{name}/... mutation and returns the daemon's
 // error text, if any. Both the success and error replies are flat objects
 // ("ok"/"error"), so one decode covers both.
@@ -274,7 +305,7 @@ func runSelectForgetClient(sock, tailnet, verb string, peers []string) {
 		os.Exit(1)
 	}
 	for _, p := range peers {
-		if err := mutate(sock, "/tailnet/"+tailnet+"/"+verb, map[string]string{"peer": p}); err != nil {
+		if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/"+verb, map[string]string{"peer": p}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -303,7 +334,7 @@ func runAllowAllClient(sock, tailnet, arg string) {
 		fmt.Fprintln(os.Stderr, "allow-all: "+err.Error())
 		os.Exit(1)
 	}
-	if err := mutate(sock, "/tailnet/"+tailnet+"/allow-all", map[string]bool{"on": on}); err != nil {
+	if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/allow-all", map[string]bool{"on": on}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -342,7 +373,7 @@ func runDomainClient(sock, tailnet, arg string) {
 	if arg == "-" {
 		arg = ""
 	}
-	if err := mutate(sock, "/tailnet/"+tailnet+"/domain", map[string]string{"domain": arg}); err != nil {
+	if err := mutate(sock, "/tailnet/"+url.PathEscape(tailnet)+"/domain", map[string]string{"domain": arg}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

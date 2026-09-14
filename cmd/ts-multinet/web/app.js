@@ -80,7 +80,17 @@ function confFor(name) {
   );
 }
 
-const domainOf = (tc) => tc.domain || tc.name;
+// slug mirrors the daemon's slugify: a DNS-safe label from a free-form name.
+const slug = (s) =>
+  (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 63)
+    .replace(/-+$/g, "") || "tailnet";
+
+const domainOf = (tc) => tc.domain || slug(tc.name);
+const hostnameOf = (tc) => tc.hostname || "ts-multinet-" + slug(tc.name);
 
 // --- actions ------------------------------------------------------------------
 
@@ -185,6 +195,8 @@ async function addTailnet() {
   }
   const domain = val("add-domain");
   if (domain) body.domain = domain;
+  const hostname = val("add-hostname");
+  if (hostname) body.hostname = hostname;
   try {
     const res = await post("/tailnet", body);
     state.dashMsg = {
@@ -274,6 +286,12 @@ function renderAddForm(empty) {
       placeholder: "domain (auto)",
       spellcheck: "false",
       "aria-label": "custom domain, optional",
+    }),
+    h("input", {
+      id: "add-hostname",
+      placeholder: "hostname (auto)",
+      spellcheck: "false",
+      "aria-label": "node name in the tailnet, optional",
     }),
     h("button", { class: "btn btn--primary", type: "submit" }, "add"),
   );
@@ -385,6 +403,27 @@ function renderDashboard() {
               "save",
             ),
           ),
+          h("dt", {}, "hostname"),
+          h(
+            "dd",
+            { class: "card__domain" },
+            h("input", {
+              "data-hostname": s.name,
+              value: hostnameOf(tc),
+              spellcheck: "false",
+              "aria-label": "node hostname in the tailnet",
+            }),
+            h(
+              "button",
+              {
+                class: "btn btn--small",
+                type: "button",
+                "data-set-hostname": s.name,
+                onclick: () => setHostnameFromInput(s.name),
+              },
+              "save",
+            ),
+          ),
           h("dt", {}, "cidr"),
           h("dd", {}, s.cidr),
           h("dt", {}, "node ip"),
@@ -404,6 +443,28 @@ function setDomainFromInput(name) {
     `input[data-domain="${CSS.escape(name)}"]`,
   );
   if (input) setDomain(name, input);
+}
+
+async function setHostname(name, input) {
+  try {
+    await post(`/tailnet/${encodeURIComponent(name)}/hostname`, {
+      hostname: input.value.trim(),
+    });
+    state.cardMsgs[name] = {
+      kind: "ok",
+      text: "hostname set — the tailnet restarts to report it (no re-login)",
+    };
+  } catch (e) {
+    state.cardMsgs[name] = { kind: "error", text: e.message };
+  }
+  refresh();
+}
+
+function setHostnameFromInput(name) {
+  const input = document.querySelector(
+    `input[data-hostname="${CSS.escape(name)}"]`,
+  );
+  if (input) setHostname(name, input);
 }
 
 function renderPeers() {
