@@ -41,6 +41,7 @@ systemd restarts; daemon owns the config file but manual edits survive.
 | Docs | plan status updates | `a837866` |
 | CLI | `--json` / `--details` flags on every command (raw replies, JSONL multi-peer, extended human forms); peers replies carry FQDN | `872c1c3` |
 | DNS hardening | routing domains set before the DNS server at registration; forwarder prefers real upstreams (`/run/systemd/resolve/resolv.conf`) over the resolved stub — no forwarding loop | `a593d09` |
+| DNS fix | friendly-alias misses (e.g. `pi.dev` — `dev` is a real gTLD) fall through to the public upstream; only MagicDNS-suffix misses stay NXDOMAIN | `1762455` |
 
 All unit gates green per commit: `go build ./...`, `go vet`, `go test ./cmd/ts-multinet/ -count=1`.
 
