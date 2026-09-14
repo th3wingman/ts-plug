@@ -66,7 +66,7 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	}
 
 	ts := &tsnet.Server{
-		Hostname: "ts-multinet-" + conf.Name,
+		Hostname: conf.nodeHostname(),
 		Dir:      dir,
 	}
 	// Start (not Up): Up blocks until logged in, but tailnets boot into

@@ -19,3 +19,16 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Fatalf("unexpected globals: %+v", cfg)
 	}
 }
+
+// nodeHostname defaults to the historical ts-multinet-<name> scheme so
+// existing configs keep their admin-console device names.
+func TestNodeHostnameDefault(t *testing.T) {
+	tc := TailnetConf{Name: "dev"}
+	if got := tc.nodeHostname(); got != "ts-multinet-dev" {
+		t.Fatalf("default hostname = %q", got)
+	}
+	tc.Hostname = "xps13"
+	if got := tc.nodeHostname(); got != "xps13" {
+		t.Fatalf("explicit hostname = %q", got)
+	}
+}

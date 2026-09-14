@@ -39,11 +39,12 @@ type Config struct {
 }
 
 type TailnetConf struct {
-	Name      string   `json:"name"`                // short id, used for state dir + hostname
+	Name      string   `json:"name"`                // short id, used for state dir
 	Suffix    string   `json:"suffix"`              // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
 	Domain    string   `json:"domain,omitempty"`    // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
 	CIDR      string   `json:"cidr"`                // synthetic range, e.g. "198.18.1.0/24"
 	TUN       string   `json:"tun"`                 // TUN device name (<=15 chars)
+	Hostname  string   `json:"hostname,omitempty"`   // node name in the tailnet; default "ts-multinet-<name>"
 	Enabled   *bool    `json:"enabled,omitempty"`   // default true
 	AllowAll  bool     `json:"allow_all,omitempty"` // select every non-Mullvad peer instead of listing resources
 	Resources []string `json:"resources,omitempty"` // short names to select (hosts entries + synthetic IPs)
@@ -52,6 +53,11 @@ type TailnetConf struct {
 
 func (tc TailnetConf) enabled() bool {
 	return tc.Enabled == nil || *tc.Enabled
+}
+
+// nodeHostname is the name this node reports inside its tailnet.
+func (tc TailnetConf) nodeHostname() string {
+	return orDefault(tc.Hostname, "ts-multinet-"+tc.Name)
 }
 
 // domainName is the friendly suffix short names resolve under (my-server.skynet):

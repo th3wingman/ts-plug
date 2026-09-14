@@ -78,6 +78,13 @@ func patchConfigFile(path string, prev, next *Config) error {
 					setMember(obj, "domain", hujson.String(n.Domain))
 				}
 			}
+			if o.Hostname != n.Hostname {
+				if n.Hostname == "" {
+					removeMember(obj, "hostname")
+				} else {
+					setMember(obj, "hostname", hujson.String(n.Hostname))
+				}
+			}
 			if o.AllowAll != n.AllowAll {
 				if !n.AllowAll {
 					removeMember(obj, "allow_all")
@@ -124,6 +131,7 @@ func configsEqual(a, b *Config) bool {
 	for i := range a.Tailnets {
 		x, y := a.Tailnets[i], b.Tailnets[i]
 		if x.Name != y.Name || x.Suffix != y.Suffix || x.Domain != y.Domain ||
+			x.Hostname != y.Hostname ||
 			x.CIDR != y.CIDR || x.TUN != y.TUN || x.AllowAll != y.AllowAll ||
 			x.StateDir != y.StateDir || !slices.Equal(x.Resources, y.Resources) {
 			return false

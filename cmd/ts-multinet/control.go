@@ -106,7 +106,7 @@ func (d *Daemon) syncTailnets(cfg *Config) error {
 	// Stop pass: gone from config, disabled, or structurally changed.
 	for _, tn := range d.liveTailnets() {
 		tc, want := wantByName[strings.ToLower(tn.conf.Name)]
-		if !want || !tc.enabled() || tn.conf.CIDR != tc.CIDR || tn.conf.TUN != tc.TUN {
+		if !want || !tc.enabled() || tn.conf.CIDR != tc.CIDR || tn.conf.TUN != tc.TUN || tn.conf.Hostname != tc.Hostname {
 			d.stopTailnet(tn)
 			continue
 		}
@@ -375,6 +375,7 @@ type tailnetStatusJSON struct {
 	Name       string `json:"name"`
 	Suffix     string `json:"suffix"`
 	CIDR       string `json:"cidr"`
+	Hostname   string `json:"hostname"` // node name reported inside the tailnet
 	AssignedIP string `json:"assigned_ip"`
 	State      string `json:"state"` // NeedsLogin, Running, …
 	LoginURL   string `json:"login_url,omitempty"`
@@ -455,7 +456,7 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	out := make([]tailnetStatusJSON, 0, len(d.tailnets))
 	for _, tn := range d.tailnets {
 		state, loginURL := tn.status()
-		ts := tailnetStatusJSON{Name: tn.conf.Name, Suffix: tn.suffix, CIDR: tn.conf.CIDR, AssignedIP: tn.assignedIP, State: state, LoginURL: loginURL, Selected: tn.selectedCount()}
+		ts := tailnetStatusJSON{Name: tn.conf.Name, Suffix: tn.suffix, CIDR: tn.conf.CIDR, Hostname: tn.conf.nodeHostname(), AssignedIP: tn.assignedIP, State: state, LoginURL: loginURL, Selected: tn.selectedCount()}
 		if st, err := tn.lc.Status(r.Context()); err == nil {
 			ts.Peers = len(st.Peer)
 			for _, p := range st.Peer {
