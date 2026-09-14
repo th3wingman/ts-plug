@@ -36,8 +36,9 @@ type Tailnet struct {
 	stateDir   string // resolved tsnet state dir; selection pins live next to it
 	assignedIP string
 	resolve    resolveFunc
-	resolved   *resolvedSync // systemd-resolved registration; nil in tests
-	cancel     func()        // cancels this tailnet's ctx (watcher + forwarder)
+	resolved   *resolvedSync   // systemd-resolved registration; nil in tests
+	cancel     func()          // cancels this tailnet's ctx (watcher + forwarder)
+	wg         *sync.WaitGroup // forwarder + watcher lifetime; Close waits before dropping the TUN
 
 	mu       sync.Mutex
 	state    string // ipnstate backend state: NeedsLogin, Running, …
@@ -113,16 +114,21 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	// the watcher and the forwarder both exit on its cancel. All the fallible
 	// setup is above, so a failed start never leaks a goroutine pair.
 	tctx, cancel := context.WithCancel(ctx)
-	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolve: resolve, resolved: rs, cancel: cancel}
+	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolve: resolve, resolved: rs, cancel: cancel, wg: &sync.WaitGroup{}}
 
 	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, resolve, newPinger(lc))
+	tn.wg.Add(2) // forwarder + watcher: Close waits for both before the TUN fd drops
 	go func() {
+		defer tn.wg.Done()
 		if err := fwd.run(tctx); err != nil && tctx.Err() == nil {
 			slog.Error("forwarder exited", "name", conf.Name, "err", err)
 		}
 	}()
 
-	go tn.watch(tctx, reg, onRunning)
+	go func() {
+		defer tn.wg.Done()
+		tn.watch(tctx, reg, onRunning)
+	}()
 	slog.Info("tailnet up", "name", conf.Name, "tun", dev, "cidr", conf.CIDR, "suffix", orDefault(suffix, "(auto)"))
 	return tn, nil
 }
@@ -264,6 +270,12 @@ func newTailnetResolver(lc *local.Client) resolveFunc {
 func (t *Tailnet) Close() {
 	if t.cancel != nil {
 		t.cancel()
+	}
+	// Wait for the forwarder and watcher to exit before closing the TUN: the
+	// interface lives until every fd reference drops, so closing early makes
+	// an immediate stop/start of the same tun name fail with TUNSETIFF EBUSY.
+	if t.wg != nil {
+		t.wg.Wait()
 	}
 	if t.tun != nil {
 		t.tun.Close()

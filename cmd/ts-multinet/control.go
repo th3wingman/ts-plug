@@ -474,9 +474,15 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (d *Daemon) handlePeers(w http.ResponseWriter, r *http.Request) {
 	filter := strings.ToLower(r.URL.Query().Get("filter"))
 	ports := parsePorts(r.URL.Query().Get("ports"))
-	out := make([]tailnetPeersJSON, 0, len(d.tailnets))
+	// Snapshot the running set under the lock — sync/stop mutate it concurrently
+	// (a stop mid-poll used to race this loop). The Tailnet pointers stay valid;
+	// status calls on a stopped one just return errors and are handled below.
+	d.mu.Lock()
+	tailnets := append([]*Tailnet(nil), d.tailnets...)
+	d.mu.Unlock()
+	out := make([]tailnetPeersJSON, 0, len(tailnets))
 
-	for _, tn := range d.tailnets {
+	for _, tn := range tailnets {
 		tp := tailnetPeersJSON{Name: tn.conf.Name, Suffix: tn.suffix}
 		st, err := tn.lc.Status(r.Context())
 		if err != nil {
