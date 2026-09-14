@@ -66,39 +66,28 @@ All unit gates green per commit: `go build ./...`, `go vet`, `go test ./cmd/ts-m
 - Fixed en route: registry domain sync on domain edits (latent bug, B1/E1);
   `confFor` parsing comments (Lane A); login session invalidation (5a07247).
 
-## Lane D — on-host acceptance (in progress)
+## Lane D — on-host acceptance (nearly done)
 
-Environment verified: resolved stub on 127.0.0.53:53 (so 127.0.0.1:53 free),
-resolvectl present, tailscale0 per-link DNS pattern confirmed. Daemon running
-current binary (md5-verified against build).
+Root cause of the login saga found and fixed by bisect: `tailscale.com
+v1.94.2` never consumed a completed browser auth; a standalone probe on
+`v1.102.3` flipped to Running seconds after auth. Bumped in `e30e443`.
 
-Blocked on: **completing the skynet login**. Root cause found and fixed by
-bisect: `tailscale.com v1.94.2` (our pinned dependency) never consumes a
-completed browser auth — the control plane approves, the node stays
-NeedsLogin forever. A standalone probe on the same host/tailnet/account with
-`v1.102.3` (cauldron's version) flipped to Running seconds after auth.
-Bumped to v1.102.3 in `e30e443` (gvisor bump included; `udp.NewForwarder`
-now returns handled-bool, unknown dsts yield ICMP unreachable).
+Verified live on this host (three tailnets, real logins):
 
-Next: reinstall (`sudo ./scripts/install-ts-multinet.sh` — keeps config and
-node state), auth the fresh URL the node prints at boot (the no-invalidate
-login fix means repeated Login clicks return the same pending URL), then
-walk the checklist below.
+1. ✅ skynet Running, hostname `xps13-m` (custom), 11 selections; `nucbox.skynet`
+   and `nucbox.tail95e9d1.ts.net` → same synthetic IP; `ping` 2/2 through the
+   TUN; hosts block consistent
+2. ✅ msinfra (66 peers) + dev Running side by side, per-TUN resolved
+   registrations (`~tail84a2fd.ts.net ~msinfra` on tsm1, `~tail30fc5e.ts.net
+   ~dev` on tsm2), disjoint synthetic ranges
+3. ✅ free-form names, domain pre-population, hostname control (verb + UI)
+4. ✅ restart-overlap EBUSY fixed twice over: Close waits for goroutines
+   (`41009ac`) and starts retry briefly-held TUN names (`5cae8ac`); peers
+   snapshot under the mutex (nil-panic fix, same commit)
 
-Then, per the acceptance checklist:
-
-1. `resolvectl query <peer>.skynet` and `<peer>.tailXXXX.ts.net` → same
-   synthetic IP; `ping <peer>.skynet` works through system DNS
-2. `resolvectl status <tun>` shows our DNS + routing domains; other links
-   (incl. tailscale0 when running) untouched
-3. select/forget round-trip via CLI and UI; config comments survive
-4. `allow-all` on/off; domain set/clear
-5. add/remove a tailnet live; re-add without browser login
-6. second tailnet (e.g. `dev`) end-to-end
-7. hosts block consistent with DNS answers
-
-Note: regular `tailscaled` was stopped on this host during testing (clean
-system); it coexists by design — restart it any time.
+Left: reinstall the current build (one restart with all fixes), re-check
+msinfra after the overlap-parked start, allow-all/domain toggles once each,
+then PR.
 
 ## Backlog (not in scope of this plan)
 

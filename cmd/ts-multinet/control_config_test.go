@@ -121,6 +121,22 @@ func TestSelectRejectsUnknownPeerAndTailnet(t *testing.T) {
 		t.Errorf("404 should list known tailnets: %s", rec.Body.String())
 	}
 
+	// a parked tailnet (in the config, not running) gets the actionable message
+	dir := filepath.Dir(cfgPath)
+	parked := `{"state_dir": "` + dir + `", "tailnets": [` +
+		`{"name":"dev","cidr":"198.18.1.0/24","tun":"tsm0"},` +
+		`{"name":"prod","cidr":"198.18.2.0/24","tun":"tsm1"}]}`
+	if err := os.WriteFile(cfgPath, []byte(parked), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rec = doReq(t, d, "POST", "/tailnet/prod/select", `{"peer":"my-server"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("parked tailnet: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "in the config but not running") {
+		t.Errorf("parked tailnet should say what to do: %s", rec.Body.String())
+	}
+
 	rec = doReq(t, d, "POST", "/tailnet/dev/select", `{"peer":""}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty peer: %d %s", rec.Code, rec.Body.String())

@@ -271,6 +271,13 @@ func (d *Daemon) confFor(name string) TailnetConf {
 	return TailnetConf{Name: name}
 }
 
+// tailnetInConfig reports whether name exists in the config file. Such a
+// tailnet may still not be running (parked start) — distinct from unknown.
+func (d *Daemon) tailnetInConfig(name string) bool {
+	c, err := loadConfig(d.cfgPath)
+	return err == nil && confByName(c, name) != nil
+}
+
 // confByName finds a tailnet's conf by name.
 func confByName(c *Config, name string) *TailnetConf {
 	for i := range c.Tailnets {
@@ -622,7 +629,11 @@ func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
 	known := d.tailnetNames()
 	d.mu.Unlock()
 	if tn == nil {
-		writeJSON(w, loginResult{Tailnet: req.Tailnet, Error: "no such tailnet (known: " + strings.Join(known, ", ") + ")"})
+		msg := "no such tailnet (known: " + strings.Join(known, ", ") + ")"
+		if d.tailnetInConfig(req.Tailnet) {
+			msg = "tailnet is in the config but not running — `ts-multinet reload` retries it"
+		}
+		writeJSON(w, loginResult{Tailnet: req.Tailnet, Error: msg})
 		return
 	}
 	state, pendingURL := tn.status()
@@ -725,7 +736,11 @@ func (d *Daemon) updateTailnet(w http.ResponseWriter, r *http.Request, fn func(r
 	known := d.tailnetNames()
 	d.mu.Unlock()
 	if tn == nil {
-		writeErr(w, http.StatusNotFound, "no such tailnet (known: "+strings.Join(known, ", ")+")")
+		msg := "no such tailnet (known: " + strings.Join(known, ", ") + ")"
+		if d.tailnetInConfig(name) {
+			msg = "tailnet is in the config but not running — `ts-multinet reload` retries it"
+		}
+		writeErr(w, http.StatusNotFound, msg)
 		return
 	}
 	peers, err := d.peerShorts(r.Context(), tn)
