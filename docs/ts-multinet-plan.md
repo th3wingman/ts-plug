@@ -107,11 +107,18 @@ Nothing — the CLI flags lane (`872c1c3`) and both DNS hardening pieces
 ## Pick up here (next session)
 
 0. **Scale lane, shape depends on the user's answer (ASK: handful vs bulk)**:
-   corp has 2000+ peers — (a) peers view: default cap + filter-first + no
-   port-probing for big tailnets; (b) if bulk exposure (allow-all): /24
-   synthetic ranges cap at 254 hosts — manual wider `cidr` inside
-   198.18.0.0/15 works today (/21 ≈ 2046); make the auto-picker size-aware.
-1. **Reinstall + verify on this host**: `sudo ./scripts/install-ts-multinet.sh`
+   corp has 1834 machines, ACL-visible to this node: 42 (+ 536 Mullvad
+   transit, filtered everywhere). (a) peers view hardening (cap/filter/no
+   auto-probe) only matters if ACLs expose big sets; (b) bulk (allow-all)
+   would need wider synthetic cidrs (/24 caps at 254).
+1. ✅ **Reinstall + verify done (post-b787d0f)**: pi.dev resolves, corp shows
+   33/42 real peers, all four tailnets Running, --details clean, restart
+   without DNS/EBUSY incidents.
+2. User housekeeping (not code): delete the `tsm-probe` device from the
+   SkyNet console (bisect artifact); check corp's ACLs for the 42-of-1834
+   visibility; regular `tailscaled` restart whenever.
+3. **PR** from `ts-plug/multinet-host-mode` (git hard gate: ask the user
+   first; sample recent PR bodies first).
    (restarts the daemon; all fixes land; msinfra should self-start via the
    TUN-retry). Then:
    - `sudo ts-multinet status` → three tailnets Running
