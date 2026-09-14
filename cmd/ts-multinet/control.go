@@ -602,9 +602,16 @@ func (d *Daemon) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, loginResult{Tailnet: req.Tailnet, Error: "no such tailnet (known: " + strings.Join(known, ", ") + ")"})
 		return
 	}
-	state, _ := tn.status()
+	state, pendingURL := tn.status()
 	if state == "Running" {
 		writeJSON(w, loginResult{Tailnet: req.Tailnet, State: state})
+		return
+	}
+	// A login is already pending: re-triggering would invalidate that URL
+	// (and any browser tab mid-auth on it). The backend drops AuthURL from
+	// status once the session expires, so an empty URL still gets a fresh one.
+	if pendingURL != "" {
+		writeJSON(w, loginResult{Tailnet: req.Tailnet, State: state, LoginURL: pendingURL})
 		return
 	}
 	if err := tn.lc.StartLoginInteractive(r.Context()); err != nil {
