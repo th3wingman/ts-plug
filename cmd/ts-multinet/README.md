@@ -86,9 +86,64 @@ to dial. No L3 NAT, no real-tailnet-IP bookkeeping — tsnet resolves the name.
 - Non-tailnet DNS is forwarded to the upstream inherited from the original
   `/etc/resolv.conf` (override with `"upstream_dns"`).
 
+## Install
+
+One command from a clone — builds, installs the binary + config + systemd
+unit, and starts the daemon:
+
+```sh
+sudo scripts/install-ts-multinet.sh
+sudo ${EDITOR:-vi} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
+sudo systemctl restart ts-multinet
+```
+
+Existing config and state are never overwritten; `--uninstall` (optionally
+`--purge` to drop node identities) removes everything. See
+`scripts/install-ts-multinet.sh --help`.
+
+What the script does, if you'd rather do it by hand (Linux only; the binary is
+self-contained):
+
+```sh
+make ts-multinet                          # builds build/ts-multinet
+sudo install -m755 build/ts-multinet /usr/local/bin/ts-multinet
+sudo mkdir -p /etc/ts-multinet
+sudo cp cmd/ts-multinet/config.example.json /etc/ts-multinet/config.json
+sudo ${EDITOR:-vi} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
+```
+
+Run it as a systemd service — it needs root (TUNs, routes, `/etc/hosts`), and
+`StateDirectory` matches the config's default `state_dir`:
+
+```ini
+# /etc/systemd/system/ts-multinet.service
+[Unit]
+Description=ts-multinet — several tailnets on one host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ts-multinet -config /etc/ts-multinet/config.json
+Restart=on-failure
+StateDirectory=ts-multinet
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```sh
+sudo systemctl daemon-reload && sudo systemctl enable --now ts-multinet
+journalctl -u ts-multinet -f           # watch the tailnets come up
+```
+
+Selection changes: edit the config, then `sudo ts-multinet reload` (or
+`sudo systemctl kill -s HUP ts-multinet`). Structural changes (adding a
+tailnet, changing `cidr`/`tun`) need a service restart.
+
 ## Run (host)
 
-The daemon needs root for the TUNs, routes, and `/etc/hosts`:
+The daemon needs root for the TUNs, routes, and `/etc/hosts` — installed as
+above, or for a quick throwaway run:
 
 ```sh
 sudo ts-multinet -config /etc/ts-multinet/config.json &
