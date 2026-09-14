@@ -5,7 +5,7 @@
 # unit, and starts the daemon. Browser login happens after install:
 #
 #   sudo scripts/install-ts-multinet.sh
-#   sudo ${EDITOR:-vi} /etc/ts-multinet/config.json   # tailnets + resources
+#   sudo ${EDITOR:-nano} /etc/ts-multinet/config.json   # tailnets + resources
 #   sudo systemctl restart ts-multinet
 #   sudo ts-multinet login skynet                     # once per tailnet, forever
 #
@@ -13,7 +13,7 @@
 # script has no key handling. Existing config and state are never overwritten.
 #
 #   --config PATH    seed /etc/ts-multinet/config.json from PATH (default:
-#                    keep existing, else cmd/ts-multinet/config.example.json)
+#                    keep existing, else cmd/ts-multinet/config.example.jsonc)
 #   --binary PATH    install this binary instead of building from the clone
 #   --uninstall      stop and remove binary, unit, and config
 #   --purge          with --uninstall: also remove state (node keys, pins)
@@ -35,12 +35,30 @@ PURGE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --config)   SEED_CONFIG="${2:-}"; shift 2 ;;
-        --binary)   BINARY="${2:-}"; shift 2 ;;
-        --uninstall) UNINSTALL=1; shift ;;
-        --purge)    PURGE=1; shift ;;
-        -h|--help)  grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "unknown option: $1 (see --help)" >&2; exit 1 ;;
+    --config)
+        SEED_CONFIG="${2:-}"
+        shift 2
+        ;;
+    --binary)
+        BINARY="${2:-}"
+        shift 2
+        ;;
+    --uninstall)
+        UNINSTALL=1
+        shift
+        ;;
+    --purge)
+        PURGE=1
+        shift
+        ;;
+    -h | --help)
+        grep '^#' "$0" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+    *)
+        echo "unknown option: $1 (see --help)" >&2
+        exit 1
+        ;;
     esac
 done
 
@@ -68,19 +86,25 @@ uninstall() {
 # --- binary: explicit --binary, else build from the clone --------------------
 SRC=""
 if [ -n "$BINARY" ]; then
-    [ -x "$BINARY" ] || { echo "--binary: $BINARY is not executable" >&2; exit 1; }
+    [ -x "$BINARY" ] || {
+        echo "--binary: $BINARY is not executable" >&2
+        exit 1
+    }
     SRC="$BINARY"
 else
-    MAKEFILE="$REPO_ROOT/Makefile"
     CMD_DIR="$REPO_ROOT/cmd/ts-multinet"
     if [ ! -d "$CMD_DIR" ]; then
         echo "not run from a ts-plug clone and no --binary given." >&2
         echo "either clone https://github.com/th3wingman/ts-plug or pass --binary" >&2
         exit 1
     fi
+    # go commonly installs to /usr/local/go/bin, which sudo's secure_path omits
+    export PATH="$PATH:/usr/local/go/bin"
     echo "building ts-multinet from $REPO_ROOT ..."
     (cd "$REPO_ROOT" && make ts-multinet)
     SRC="$REPO_ROOT/build/ts-multinet"
+    # the clone's build artifact belongs to the invoking user, not root
+    [ -n "${SUDO_USER:-}" ] && chown "$SUDO_USER" "$SRC" 2>/dev/null || true
 fi
 
 install -m755 "$SRC" "$BINDIR/ts-multinet"
@@ -90,18 +114,21 @@ mkdir -p "$(dirname "$SYSCONF")"
 if [ -f "$SYSCONF" ]; then
     echo "kept existing $SYSCONF"
 elif [ -n "$SEED_CONFIG" ]; then
-    [ -f "$SEED_CONFIG" ] || { echo "--config: $SEED_CONFIG not found" >&2; exit 1; }
+    [ -f "$SEED_CONFIG" ] || {
+        echo "--config: $SEED_CONFIG not found" >&2
+        exit 1
+    }
     install -m600 "$SEED_CONFIG" "$SYSCONF"
     echo "installed $SYSCONF from $SEED_CONFIG"
 else
-    install -m600 "$REPO_ROOT/cmd/ts-multinet/config.example.json" "$SYSCONF"
+    install -m600 "$REPO_ROOT/cmd/ts-multinet/config.example.jsonc" "$SYSCONF"
     echo "installed $SYSCONF from the example — edit it for your tailnets"
 fi
 
 # --- unit ---------------------------------------------------------------------
 # StateDirectory matches the config default state_dir (/var/lib/ts-multinet),
 # so node identities and selection pins survive restarts and reinstalls.
-cat > "$UNIT" <<'EOF'
+cat >"$UNIT" <<'EOF'
 [Unit]
 Description=ts-multinet — several tailnets on one host
 After=network-online.target
@@ -126,7 +153,7 @@ echo "  $SYSCONF"
 echo "  $UNIT  (enabled, running)"
 echo
 echo "next steps:"
-echo "  1. sudo ${EDITOR:-vi} $SYSCONF            # tailnets, cidrs, resources"
+echo "  1. sudo ${EDITOR:-nano} $SYSCONF            # tailnets, cidrs, resources"
 echo "  2. sudo systemctl restart ts-multinet"
 echo "  3. sudo ts-multinet login <tailnet>        # once per tailnet — browser URL"
 echo "  4. sudo ts-multinet status                 # states + selections"

@@ -1,0 +1,45 @@
+// ts-multinet config — parsed as HuJSON: // comments and trailing commas are fine.
+//
+// Minimal working setup:
+//   1. list each tailnet below (name, cidr, tun — all required)
+//   2. sudo systemctl restart ts-multinet
+//   3. sudo ts-multinet login <name>      # once per tailnet; prints a browser URL
+//   4. sudo ts-multinet peers <name>      # short names of that tailnet's peers
+//   5. fill in "resources" with the short names you want reachable, then
+//      sudo ts-multinet reload
+//
+// No authkeys: node state under state_dir persists, so login is once, in the
+// browser, forever.
+{
+  // matches StateDirectory= in the systemd unit; the bare default is ".state"
+  // in the working directory — keep this line when running as a service
+  "state_dir": "/var/lib/ts-multinet",
+
+  // everything else is optional — defaults shown:
+  // "mtu": 1280,
+  // "dns_listen": "127.0.0.1:53",
+  // "upstream_dns": "1.1.1.1",        // non-tailnet names; default: first nameserver in /etc/resolv.conf
+  // "hosts_file": "/etc/hosts",
+
+  "tailnets": [
+    {
+      // short id — used by `login`/`peers`/`reload <name>` and the state dir
+      "name": "example",
+
+      // synthetic range for this tailnet: unique per tailnet, out of
+      // 198.18.0.0/15 (benchmark space, never real traffic).
+      // Next tailnet takes 198.18.2.0/24, then .3.0/24, ...
+      "cidr": "198.18.1.0/24",
+
+      // TUN device name, <= 15 chars (kernel limit)
+      "tun": "tsm0",
+
+      // optional per tailnet:
+      // "suffix": "example.ts.net",          // MagicDNS suffix; auto-detected when omitted
+      // "enabled": false,                    // default true; false skips this tailnet
+      // "allow_all": true,                   // select every peer instead of listing resources
+      //                                      // (shared Mullvad exit nodes are never selectable)
+      // "resources": ["host1", "host2"],     // short names exactly as `peers` shows them
+    },
+  ]
+}

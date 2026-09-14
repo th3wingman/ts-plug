@@ -22,6 +22,8 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/tailscale/hujson"
 )
 
 // Config is the on-disk JSON. Nodes authenticate with a one-time browser login
@@ -227,6 +229,11 @@ func loadConfig(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	// HuJSON: // comments and trailing commas are allowed, so the config can
+	// document itself (config.example.jsonc is written that way).
+	if b, err = hujson.Standardize(b); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	var c Config
 	if err := json.Unmarshal(b, &c); err != nil {

@@ -78,19 +78,26 @@ to dial. No L3 NAT, no real-tailnet-IP bookkeeping — tsnet resolves the name.
 
 The config says which tailnets you have and which hosts on them you want
 reachable. `resources` lists hosts by their short name — exactly what
-`ts-multinet peers` shows. `config.example.json`:
+`ts-multinet peers` shows. `config.example.jsonc` (installed as
+`/etc/ts-multinet/config.json`, comments included — the loader takes HuJSON):
 
-```json
+```jsonc
 {
   "state_dir": "/var/lib/ts-multinet",
-  "hosts_file": "/etc/hosts",
   "tailnets": [
-    {"name": "skynet", "cidr": "198.18.1.0/24", "tun": "tsm0", "resources": ["nucbox"]},
-    {"name": "corp",   "cidr": "198.18.3.0/24", "tun": "tsm2", "allow_all": false,
-     "resources": ["rpi4-sk-01", "gregd-llm-sandbox-eu-01"]}
+    {
+      "name": "example",              // short id: `login`/`peers`/`reload <name>`
+      "cidr": "198.18.1.0/24",        // synthetic range, unique per tailnet
+      "tun": "tsm0",                   // <= 15 chars
+      // "resources": ["host1", "host2"],  // short names as `peers` shows them
+      // "allow_all": true,                // or: every peer (Mullvad exits never)
+    },
   ]
 }
 ```
+
+The example documents every optional key (mtu, dns_listen, upstream_dns,
+hosts_file, suffix, enabled) inline with its default.
 
 - **No authkeys.** Each tailnet is a persistent node: log it in once with
   `ts-multinet login <tailnet>` (prints a browser URL); state persists under
@@ -114,6 +121,7 @@ reachable. `resources` lists hosts by their short name — exactly what
 
   Everything outside the markers is preserved. IPs are allocated in sorted
   name order, so they're stable across restarts.
+
 - `tun` names must be ≤15 chars (kernel `IFNAMSIZ`).
 - Non-tailnet DNS is forwarded to the upstream inherited from the original
   `/etc/resolv.conf` (override with `"upstream_dns"`).
@@ -125,7 +133,7 @@ unit, and starts the daemon:
 
 ```sh
 sudo scripts/install-ts-multinet.sh
-sudo ${EDITOR:-vi} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
+sudo ${EDITOR:-nano} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
 sudo systemctl restart ts-multinet
 ```
 
@@ -140,8 +148,8 @@ self-contained):
 make ts-multinet                          # builds build/ts-multinet
 sudo install -m755 build/ts-multinet /usr/local/bin/ts-multinet
 sudo mkdir -p /etc/ts-multinet
-sudo cp cmd/ts-multinet/config.example.json /etc/ts-multinet/config.json
-sudo ${EDITOR:-vi} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
+sudo cp cmd/ts-multinet/config.example.jsonc /etc/ts-multinet/config.json
+sudo ${EDITOR:-nano} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
 ```
 
 Run it as a systemd service — it needs root (TUNs, routes, `/etc/hosts`), and
@@ -229,6 +237,7 @@ docker exec tsm -ports 22,5432,3000 ts-multinet peers db
 docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
 docker exec tsm ts-multinet reload              # after editing selection config
 ```
+
 ```
 == skynet (tail523555.ts.net) — 2 shown, 2 up ==
   STATE NAME            IP              OS     SERVICES
