@@ -197,6 +197,13 @@ func main() {
 	// Resolve the upstream BEFORE we clobber resolv.conf, so we can inherit
 	// whatever the container was already using (e.g. Docker's 127.0.0.11).
 	upstream := ensurePort(cfg.UpstreamDNS)
+	if upstream == "" && !inContainer() {
+		// On resolved hosts /etc/resolv.conf points at the 127.0.0.53 stub —
+		// forwarding to it risks a loop whenever resolved routes a general
+		// query our way (restart windows, mis-registered links). The runtime
+		// file lists the real upstream servers; prefer those.
+		upstream = ensurePort(firstNameserver("/run/systemd/resolve/resolv.conf"))
+	}
 	if upstream == "" {
 		upstream = ensurePort(firstNameserver("/etc/resolv.conf"))
 	}

@@ -69,12 +69,17 @@ func (s *resolvedSync) register(dev, suffix, domain string) {
 	s.registered[dev] = key
 	s.mu.Unlock()
 
-	if err := resolvectl("dns", dev, s.addr); err != nil {
-		slog.Warn("resolvectl dns failed — selected names still resolve via the hosts block", "dev", dev, "err", err)
-		return
-	}
+	// Domain first, DNS server second: between the two calls the link must
+	// never have a DNS server without routing domains — for that gap resolved
+	// would treat it as a general resolver and could loop us back through its
+	// own stub (our historical upstream). With domains set and no server yet,
+	// the link is simply ignored until the second call lands.
 	if err := resolvectl("domain", dev, "~"+suffix, "~"+domain); err != nil {
 		slog.Warn("resolvectl domain failed — selected names still resolve via the hosts block", "dev", dev, "err", err)
+		return
+	}
+	if err := resolvectl("dns", dev, s.addr); err != nil {
+		slog.Warn("resolvectl dns failed — selected names still resolve via the hosts block", "dev", dev, "err", err)
 		return
 	}
 	slog.Info("registered with systemd-resolved", "dev", dev, "suffix", suffix, "domain", domain)
