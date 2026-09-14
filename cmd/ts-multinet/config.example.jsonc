@@ -1,18 +1,22 @@
 // ts-multinet config — parsed as HuJSON: // comments and trailing commas are fine.
 //
-// Minimal working setup:
-//   1. list each tailnet below (name, cidr, tun — all required)
-//   2. sudo systemctl restart ts-multinet
-//   3. sudo ts-multinet login <name>      # once per tailnet; prints a browser URL
-//   4. sudo ts-multinet peers <name>      # short names of that tailnet's peers
-//   5. sudo ts-multinet select <name> <peer>...   # expose them (or use the web UI)
+// A fresh install starts EMPTY and is managed live from the web UI
+// (http://127.0.0.1:8123) or the CLI — no file editing, no restarts:
 //
-// The daemon owns this file: select/forget/allow-all/domain (CLI and web UI)
-// patch it in place and your comments survive. Manual edits work too — just
-// `sudo ts-multinet reload` afterwards.
+//   sudo ts-multinet add <name>        # tailnet appears below, cidr/tun auto-picked
+//   sudo ts-multinet login <name>      # once per tailnet; prints a browser URL
+//   sudo ts-multinet peers <name>      # short names of that tailnet's peers
+//   sudo ts-multinet select <name> <peer>...   # expose them (or use the web UI)
+//
+// The daemon owns this file: add/remove/select/forget/allow-all/domain
+// (CLI and web UI) patch it in place and your comments survive. Manual edits
+// work too — just `sudo ts-multinet reload` afterwards; only globals
+// (mtu, dns_listen, upstream_dns, state_dir, hosts_file, ui_listen)
+// need a service restart.
 //
 // No authkeys: node state under state_dir persists, so login is once, in the
-// browser, forever.
+// browser, forever. Removing a tailnet keeps its state — re-adding logs back
+// in without a browser.
 {
   // matches StateDirectory= in the systemd unit; the bare default is ".state"
   // in the working directory — keep this line when running as a service
@@ -26,27 +30,24 @@
   // "ui_listen": "127.0.0.1:8123",    // web UI (localhost-only, no auth): dashboard, peer selection, logins
 
   "tailnets": [
-    {
-      // short id — used by `login`/`peers`/`reload <name>` and the state dir
-      "name": "example",
-
-      // synthetic range for this tailnet: unique per tailnet, out of
-      // 198.18.0.0/15 (benchmark space, never real traffic).
-      // Next tailnet takes 198.18.2.0/24, then .3.0/24, ...
-      "cidr": "198.18.1.0/24",
-
-      // TUN device name, <= 15 chars (kernel limit)
-      "tun": "tsm0",
-
-      // optional per tailnet:
-      // "suffix": "example.ts.net",          // MagicDNS suffix; auto-detected when omitted
-      // "domain": "example",                 // friendly DNS suffix (default: the tailnet name);
-      //                                          // my-server.example and my-server.example.ts.net both resolve
-      // "enabled": false,                    // default true; false skips this tailnet
-      // "allow_all": true,                   // select every peer instead of listing resources
-      //                                      // (shared Mullvad exit nodes are never selectable)
-      // "resources": ["host1", "host2"],     // short names exactly as `peers` shows them;
-      //                                      // usually managed via `select`/`forget` or the web UI
-    },
+    // nothing here yet — tailnets appear as you add them (UI or `add`).
+    // A hand-written entry, if you prefer files, looks like:
+    //
+    // {
+    //   "name": "example",              // short id — used by `login`/`peers`/`select <name> ...`
+    //   "cidr": "198.18.1.0/24",        // synthetic range, unique per tailnet, out of 198.18.0.0/15;
+    //   //                               // next tailnet takes 198.18.2.0/24, then .3.0/24, ...
+    //   "tun": "tsm0",                  // TUN device name, <= 15 chars (kernel limit)
+    //
+    //   // optional:
+    //   // "suffix": "example.ts.net",  // MagicDNS suffix; auto-detected when omitted
+    //   // "domain": "example",         // friendly DNS suffix (default: the tailnet name);
+    //   //                              // my-server.example and my-server.example.ts.net both resolve
+    //   // "enabled": false,            // default true; false skips this tailnet
+    //   // "allow_all": true,           // select every peer instead of listing resources
+    //   //                              // (shared Mullvad exit nodes are never selectable)
+    //   // "resources": ["host1", "host2"],  // short names exactly as `peers` shows them;
+    //   //                                   // usually managed via `select`/`forget` or the web UI
+    // },
   ]
 }

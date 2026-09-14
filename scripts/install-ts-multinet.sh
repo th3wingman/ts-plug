@@ -5,11 +5,14 @@
 # unit, and starts the daemon. Browser login happens after install:
 #
 #   sudo scripts/install-ts-multinet.sh
-#   sudo ${EDITOR:-nano} /etc/ts-multinet/config.json   # tailnets + resources
-#   sudo systemctl restart ts-multinet
-#   sudo ts-multinet login skynet                     # once per tailnet, forever
-#   sudo ts-multinet select skynet nucbox             # expose peers (or the web UI)
+#   sudo ts-multinet add skynet              # or: web UI at http://127.0.0.1:8123
+#   sudo ts-multinet login skynet            # once per tailnet, forever
+#   sudo ts-multinet select skynet nucbox    # expose peers (or the web UI)
 #
+# A fresh install starts EMPTY (config ships with nothing configured) and
+# tailnets are added live — no config editing, no restarts. Only globals
+# (mtu, dns_listen, upstream_dns, state_dir, hosts_file, ui_listen) ever
+# need a service restart.
 # Host DNS is automatic on systemd-resolved hosts (per-TUN routing domains);
 # without resolved, selected names still resolve via the /etc/hosts block.
 # The web UI listens on http://127.0.0.1:8123 (config: ui_listen).
@@ -127,7 +130,7 @@ elif [ -n "$SEED_CONFIG" ]; then
     echo "installed $SYSCONF from $SEED_CONFIG"
 else
     install -m600 "$REPO_ROOT/cmd/ts-multinet/config.example.jsonc" "$SYSCONF"
-    echo "installed $SYSCONF from the example — edit it for your tailnets"
+    echo "installed $SYSCONF from the example — starts empty; add tailnets from the web UI or CLI"
 fi
 
 # --- unit ---------------------------------------------------------------------
@@ -163,10 +166,9 @@ echo "  $SYSCONF"
 echo "  $UNIT  (enabled, running)"
 echo
 echo "next steps:"
-echo "  1. sudo ${EDITOR:-nano} $SYSCONF            # tailnets, cidrs"
-echo "  2. sudo systemctl restart ts-multinet"
-echo "  3. sudo ts-multinet login <tailnet>        # once per tailnet — browser URL"
-echo "  4. sudo ts-multinet select <tailnet> <peer>...   # expose peers (or: forget, allow-all, domain)"
-echo "  5. http://127.0.0.1:8123                   # web UI: dashboard, selection, logins, reload"
+echo "  1. http://127.0.0.1:8123                   # web UI: add tailnets, log in, select peers"
+echo "     sudo ts-multinet add <name>             # …or add from the CLI (cidr/tun auto-picked)"
+echo "  2. sudo ts-multinet login <tailnet>        # once per tailnet — browser URL"
+echo "  3. sudo ts-multinet select <tailnet> <peer>...   # expose peers (or: forget, allow-all, domain)"
 echo "     sudo ts-multinet status                 # states + selections"
 echo "     journalctl -u ts-multinet -f            # watch it come up"

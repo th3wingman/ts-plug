@@ -146,6 +146,22 @@ func main() {
 			runDomainClient(*flagSock, tailnet, arg)
 		case "config":
 			runConfigClient(*flagSock)
+		case "add":
+			if len(args) < 2 || len(args) == 3 || len(args) > 4 {
+				fmt.Fprintln(os.Stderr, "usage: ts-multinet add <name> [cidr tun] — cidr/tun optional, as a pair")
+				os.Exit(1)
+			}
+			cidr, tun := "", ""
+			if len(args) == 4 {
+				cidr, tun = args[2], args[3]
+			}
+			runAddClient(*flagSock, args[1], cidr, tun)
+		case "remove":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: ts-multinet remove <name>")
+				os.Exit(1)
+			}
+			runRemoveClient(*flagSock, args[1])
 		default:
 			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", args[0])
 			usage()
@@ -256,12 +272,14 @@ usage:
   ts-multinet [flags] peers [filter]  list peers and probe their services
   ts-multinet [flags] check <host[:port]>  diagnose one target end-to-end
   ts-multinet [flags] login [tailnet]  start browser login for a tailnet (or list what needs one)
-  ts-multinet [flags] reload           re-read selection config and rewrite the hosts block
+  ts-multinet [flags] reload           re-read the config and apply it live — tailnets included
   ts-multinet [flags] select <tailnet> <peer>...   expose peers on a tailnet
   ts-multinet [flags] forget <tailnet> <peer>...   stop exposing peers
   ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
   ts-multinet [flags] domain <tailnet> [name|-]     set (or print) the friendly DNS suffix; - clears it
   ts-multinet [flags] config                        print the effective config
+  ts-multinet [flags] add <name> [cidr tun]         add a tailnet live (cidr/tun auto-picked when omitted)
+  ts-multinet [flags] remove <name>                 stop a tailnet and drop it from config (node state kept)
 
 (every verb above talks to the running daemon over its control socket; only a
 bare "ts-multinet" invocation runs the daemon itself. Config edits — tailnets

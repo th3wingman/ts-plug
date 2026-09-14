@@ -10,15 +10,30 @@ import (
 	"github.com/tailscale/hujson"
 )
 
-// testConfig seeds a temp config from the shipped example and returns its path.
+// patchFixture is the patch tests' own config: one "example" tailnet with
+// the comments the tests assert survive patching. It is deliberately NOT the
+// shipped example — that one is empty by design (fresh installs start with
+// zero tailnets; see config_test.go).
+const patchFixture = `{
+  // matches StateDirectory= in the systemd unit
+  "state_dir": "/var/lib/ts-multinet",
+  "tailnets": [
+    {
+      "name": "example",
+      "cidr": "198.18.1.0/24",
+      // TUN device name, <= 15 chars (kernel limit)
+      "tun": "tsm0",
+      // optional per tailnet:
+      // "resources": ["host1", "host2"],     // short names exactly as 'peers' shows them
+    },
+  ]
+}`
+
+// testConfig seeds a temp config from the patch fixture and returns its path.
 func testConfig(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile("config.example.jsonc")
-	if err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join(t.TempDir(), "config.jsonc")
-	if err := os.WriteFile(path, b, 0600); err != nil {
+	if err := os.WriteFile(path, []byte(patchFixture), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -33,12 +48,12 @@ func mustLoad(t *testing.T, path string) *Config {
 	return cfg
 }
 
-// exampleComments must survive every patch — they are what humans read.
+// fixture comments must survive every patch — they are what humans read.
 var exampleComments = []string{
 	"// matches StateDirectory= in the systemd unit",
 	"// TUN device name, <= 15 chars (kernel limit)",
 	"// optional per tailnet:",
-	"// \"resources\": [\"host1\", \"host2\"],     // short names exactly as `peers` shows them",
+	"// \"resources\": [\"host1\", \"host2\"],     // short names exactly as 'peers' shows them",
 }
 
 func assertComments(t *testing.T, path string) {

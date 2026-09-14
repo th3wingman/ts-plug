@@ -48,7 +48,7 @@ sources synthetic-range traffic from it instead of bouncing off the container's
 ### Protocols
 
 | | Behavior |
-|---|---|
+| --- | --- |
 | TCP | terminated on the TUN, re-dialed over the tailnet |
 | UDP | per-flow relay with a 60s idle reap (UDP never closes itself) |
 | ICMP echo | `ping` proxied: probe the real peer over the tailnet (TSMP — works even if it firewalls ICMP), answer with the real RTT; no reply ⇒ genuinely unreachable |
@@ -58,7 +58,7 @@ sources synthetic-range traffic from it instead of bouncing off the container's
 Three forms all resolve to the same host:
 
 | Form | Example | How |
-|---|---|---|
+| --- | --- | --- |
 | Full MagicDNS FQDN | `rpi4-sk-01.tail523555.ts.net` | real suffix match |
 | Friendly alias | `rpi4-sk-01.skynet` | the tailnet's `domain` (default: its `name`) accepted as an alias suffix, canonicalized to the real FQDN |
 | Bare hostname | `rpi4-sk-01` | resolv.conf `search <names>` expands it; tried against each tailnet (containers) |
@@ -111,7 +111,7 @@ client** for the whole OS on **one** tailnet. `ts-multinet` is an L4 (+ICMP)
 **proxy** that fakes transparency for **named services** across **N** tailnets.
 
 | | `tailscaled` (full client) | ts-multinet |
-|---|---|---|
+| --- | --- | --- |
 | Tailnets at once | 1 (profile switch) | **N simultaneously** ← the whole point |
 | Datapath | kernel TUN, true L3 passthrough | userspace tun2socks, double gVisor stack |
 | Protocols | everything IP carries | TCP, UDP, ICMP-echo only |
@@ -155,13 +155,16 @@ Everything a fresh session needs to pick this up.
 ## Where things are
 
 - **Code:** `cmd/ts-multinet/` (one binary). Files: `ts-multinet.go` (main +
-  config + subcommand dispatch), `tailnet.go` (per-tailnet bring-up, status
-  watcher, resolver, pinger, assigned-IP-on-TUN), `forwarder.go` (gVisor stack,
-  TCP forwarder, ICMP interception, packet pump), `udp.go`, `icmp.go`, `dns.go`
-  (responder + synthetic-IP registry + allocator), `resolved.go` (per-TUN
-  systemd-resolved registration/revert), `selection.go` (selection resolution,
-  identity pins, Mullvad filter), `hosts.go` (/etc/hosts managed block),
-  `control.go` (daemon registry + unix socket server + mutation endpoints),
+  config + subcommand dispatch), `tailnet.go` (per-tailnet bring-up with its
+  own cancelable ctx — teardown-friendly —, status watcher, resolver, pinger,
+  assigned-IP-on-TUN), `forwarder.go` (gVisor stack, TCP forwarder, ICMP
+  interception, packet pump), `udp.go`, `icmp.go`, `dns.go` (responder +
+  synthetic-IP registry + allocator + per-tailnet remove), `resolved.go`
+  (per-TUN systemd-resolved registration/revert, applied and reverted live),
+  `selection.go` (selection resolution, identity pins, Mullvad filter),
+  `hosts.go` (/etc/hosts managed block), `control.go` (daemon registry + unix
+  socket server + mutation endpoints + `syncTailnets`/`stopTailnet` — the
+  diff-based runtime tailnet lifecycle every change funnels through),
   `configpatch.go` (comment-preserving hujson config edits + atomic write),
   `controlclient.go` (CLI clients + formatting), `web.go` + `web/` (embedded
   vanilla-JS UI on the TCP listener), `tun_linux.go` (raw TUN via ioctl + `ip`
@@ -219,6 +222,10 @@ The image (alpine) ships a toolbox: `dig`, `curl`, `nc`, `tcpdump`, `jq`, `bash`
   idle flows yourself (`udpIdle` in `udp.go`) or leak endpoints.
 - **Two gVisor stacks in the datapath** (ours + tsnet's) cap throughput. Don't
   expect line rate; this is an admin/SSH/HTTP proxy.
+- **Container `resolv.conf` `search` is startup-only** — bare-name expansion
+  is written once when the daemon hijacks resolv.conf; later `domain` changes
+  don't rewrite it (restart the container to pick them up). Host mode is
+  unaffected: resolved routing domains re-register live on domain change.
 - Assigned IP goes on the TUN for source addressing; inbound-to-self does NOT
   traverse the TUN (see "two doors" above) — a common tcpdump red herring.
 
@@ -247,6 +254,9 @@ The image (alpine) ships a toolbox: `dig`, `curl`, `nc`, `tcpdump`, `jq`, `bash`
 7. ~~**CLI selection commands (`select`/`forget`) and a local web UI / tray**~~
    — **done** for CLI + web UI: `select`/`forget`/`allow-all`/`domain` verbs
    and an embedded localhost web UI (dashboard, selection, logins, reload) on
-   `ui_listen`. A tray app remains unexplored; config editing still works.
+   `ui_listen`. Runtime tailnet add/remove extends this item and is done too:
+   `add`/`remove` (CLI + UI form) drive `syncTailnets`, so every config change
+   applies live — only globals (mtu, dns_listen, state_dir, hosts_file,
+   ui_listen) still restart the service. A tray app remains unexplored.
    Bare short names on the host (`ping host` without a suffix) would need
    search-domain decisions per host — still open, arguably part of this item.

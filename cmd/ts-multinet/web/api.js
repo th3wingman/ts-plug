@@ -25,13 +25,21 @@ async function request(method, path, body) {
   const text = await res.text();
   let data = null;
   if (text) {
-    try { data = JSON.parse(text); } catch { /* non-JSON error body */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* non-JSON error body */
+    }
   }
   if (!res.ok) {
-    throw new ApiError((data && data.error) || res.statusText || "error " + res.status, res.status);
+    throw new ApiError(
+      (data && data.error) || res.statusText || "error " + res.status,
+      res.status,
+    );
   }
   return data;
 }
 
 export const get = (path) => request("GET", path);
 export const post = (path, body) => request("POST", path, body || {});
+export const del = (path) => request("DELETE", path);

@@ -22,18 +22,19 @@ ping rpi4-sk-01.corp         # tailnet 3
 No profile switching. No auth keys to rotate. Your normal `tailscaled` (if
 you run one) keeps working untouched.
 
-**Getting there is three steps, once:**
+**Getting there is three steps, once — all live, no config editing, no
+restarts:**
 
 ```sh
-sudo scripts/install-ts-multinet.sh   # installs + starts the daemon
+sudo scripts/install-ts-multinet.sh   # installs + starts the daemon (empty)
+sudo ts-multinet add skynet           # or the web UI at http://127.0.0.1:8123
 sudo ts-multinet login skynet          # prints a link; open it, log in — forever
-sudo ts-multinet login corp            # …once per tailnet
 ```
 
-Then say which hosts you want — `sudo ts-multinet select <tailnet> <host>`,
-the web UI, or a config edit — and the names work everywhere. See
-**[Install](#install)** below for the details, or
-`sudo ts-multinet peers` to browse what's out there before deciding.
+Then say which hosts you want — `sudo ts-multinet select <tailnet> <host>` or
+the web UI — and the names work everywhere. See **[Install](#install)** below
+for the details, or `sudo ts-multinet peers` to browse what's out there before
+deciding.
 
 > **Status: MVP.** Linux. Runs directly on the host (recommended) or inside a
 > container network namespace. TCP, UDP, and ICMP-echo work. Nodes are
@@ -80,7 +81,10 @@ to dial. No L3 NAT, no real-tailnet-IP bookkeeping — tsnet resolves the name.
 The config says which tailnets you have and which hosts on them you want
 reachable. `resources` lists hosts by their short name — exactly what
 `ts-multinet peers` shows. `config.example.jsonc` (installed as
-`/etc/ts-multinet/config.json`, comments included — the loader takes HuJSON):
+`/etc/ts-multinet/config.json`, comments included — the loader takes HuJSON)
+ships **empty**: a fresh install starts with no tailnets and everything is
+added live from the web UI or the CLI — the file is the record, not the
+interface. A hand-written entry (if you prefer files) looks like:
 
 ```jsonc
 {
@@ -101,10 +105,12 @@ reachable. `resources` lists hosts by their short name — exactly what
 The example documents every optional key (mtu, dns_listen, upstream_dns,
 hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
 
-- **The daemon owns the config file.** `select`/`forget`/`allow-all`/`domain`
-  (CLI and web UI) patch it in place — comments and formatting survive.
-  Manual edits still work: edit, then `sudo ts-multinet reload`. Structural
-  changes (adding tailnets, cidr/tun) need a service restart.
+- **The daemon owns the config file.** `add`/`remove`/`select`/`forget`/
+  `allow-all`/`domain` (CLI and web UI) patch it in place — comments and
+  formatting survive — and apply live. Manual edits still work: edit, then
+  `sudo ts-multinet reload`. Only globals (mtu, dns_listen, upstream_dns,
+  state_dir, hosts_file, ui_listen) need a service restart. Removing a
+  tailnet keeps its node state; re-adding logs back in without a browser.
 
 - **No authkeys.** Each tailnet is a persistent node: log it in once with
   `ts-multinet login <tailnet>` (prints a browser URL); state persists under
@@ -138,13 +144,15 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
 
 ## Web UI
 
-The daemon serves a small control panel at **http://127.0.0.1:8123** (knob:
+The daemon serves a small control panel at **<http://127.0.0.1:8123>** (knob:
 `ui_listen`) — same API the CLI talks to, rendered for a browser:
 
 - per-tailnet cards: state, suffix, custom domain, login button (clickable
-  auth URL), allow-all toggle
+  auth URL), allow-all toggle, remove button (node state kept)
+- add-tailnet form — cidr/tun/domain optional ("auto"), doubling as the
+  friendly empty state on a fresh install
 - peers tables with select checkboxes and probed services
-- effective config view, reload button
+- effective config view, reload button (surfaces needs-restart notices)
 
 It binds on localhost only, no auth: same trust model as the unix control
 socket (root-owned, local-only). Manage remotely over SSH port-forwarding.
@@ -177,9 +185,10 @@ One command from a clone — builds, installs the binary + config + systemd
 unit, and starts the daemon:
 
 ```sh
-sudo scripts/install-ts-multinet.sh
-sudo ${EDITOR:-nano} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
-sudo systemctl restart ts-multinet
+sudo scripts/install-ts-multinet.sh   # daemon starts empty
+# then, live — no config editing, no restarts:
+sudo ts-multinet add skynet           # or: open http://127.0.0.1:8123
+sudo ts-multinet login skynet          # browser URL, once, forever
 ```
 
 Existing config and state are never overwritten; `--uninstall` (optionally
@@ -194,7 +203,8 @@ make ts-multinet                          # builds build/ts-multinet
 sudo install -m755 build/ts-multinet /usr/local/bin/ts-multinet
 sudo mkdir -p /etc/ts-multinet
 sudo cp cmd/ts-multinet/config.example.jsonc /etc/ts-multinet/config.json
-sudo ${EDITOR:-nano} /etc/ts-multinet/config.json   # tailnets, cidrs, resources
+# optional, if you prefer files over the UI/CLI: edit the config, then
+#   sudo ts-multinet reload      # applies live — tailnets included
 ```
 
 Run it as a systemd service — it needs root (TUNs, routes, `/etc/hosts`), and
@@ -221,10 +231,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ts-multinet
 journalctl -u ts-multinet -f           # watch the tailnets come up
 ```
 
-Selection changes: `sudo ts-multinet select/forget <tailnet> <peer>...`
-(patches the config in place and applies immediately — no reload needed),
-`sudo ts-multinet reload`, or the web UI. Structural changes (adding a
-tailnet, changing `cidr`/`tun`) need a service restart.
+Selection changes: `sudo ts-multinet select/forget <tailnet> <peer>...`,
+`sudo ts-multinet reload`, or the web UI — all patch the config in place and
+apply immediately. Tailnet add/remove (`add`/`remove`, or the UI form) is
+live too; changing `cidr`/`tun` is a remove + re-add away from live as well.
+Only globals (mtu, dns_listen, upstream_dns, state_dir, hosts_file,
+ui_listen) need a service restart.
 
 ## Run (host)
 

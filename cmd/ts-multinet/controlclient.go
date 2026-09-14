@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,19 +18,40 @@ import (
 	"strings"
 )
 
-// controlGet queries the daemon's unix socket and decodes JSON into out.
-func controlGet(sock, path string, out any) error {
+// controlDo sends a JSON request with any method to the daemon's unix socket
+// and decodes the response; the verbs below are thin wrappers over it.
+func controlDo(sock, method, path string, body any, out any) error {
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rd = bytes.NewReader(b)
+	}
 	c := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 		},
 	}}
-	resp, err := c.Get("http://unix" + path)
+	req, err := http.NewRequest(method, "http://unix"+path, rd)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.Do(req)
 	if err != nil {
 		return fmt.Errorf("no daemon at %s — is it running? (%w)", sock, err)
 	}
 	defer resp.Body.Close()
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// controlGet queries the daemon's unix socket and decodes JSON into out.
+func controlGet(sock, path string, out any) error {
+	return controlDo(sock, http.MethodGet, path, nil, out)
 }
 
 func runStatusClient(sock string) {
@@ -129,21 +151,56 @@ func runCheckClient(sock, target string) {
 
 // controlPost posts JSON to the daemon's unix socket and decodes the response.
 func controlPost(sock, path string, body any, out any) error {
-	b, err := json.Marshal(body)
-	if err != nil {
-		return err
+	return controlDo(sock, http.MethodPost, path, body, out)
+}
+
+// runAddClient adds a tailnet live. cidr/tun are optional and come as a pair;
+// the server auto-picks the next free synthetic /24 and tsm<N> when omitted.
+func runAddClient(sock, name, cidr, tun string) {
+	body := map[string]string{"name": name}
+	if cidr != "" {
+		body["cidr"], body["tun"] = cidr, tun
 	}
-	c := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
-		},
-	}}
-	resp, err := c.Post("http://unix"+path, "application/json", bytes.NewReader(b))
-	if err != nil {
-		return fmt.Errorf("no daemon at %s — is it running? (%w)", sock, err)
+	var res struct {
+		OK     string `json:"ok"`
+		Error  string `json:"error"`
+		Name   string `json:"name"`
+		CIDR   string `json:"cidr"`
+		TUN    string `json:"tun"`
+		Domain string `json:"domain"`
 	}
-	defer resp.Body.Close()
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := controlPost(sock, "/tailnet", body, &res); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if res.Error != "" {
+		fmt.Fprintln(os.Stderr, "add: "+res.Error)
+		os.Exit(1)
+	}
+	fmt.Printf("added %s — cidr %s, tun %s\n", res.Name, res.CIDR, res.TUN)
+	if res.Domain != "" {
+		fmt.Printf("domain %s\n", res.Domain)
+	}
+	fmt.Printf("next: sudo ts-multinet login %s\n", res.Name)
+}
+
+// runRemoveClient stops a tailnet and drops it from the config. Node state
+// is kept, so the printed re-add hint needs no new browser login.
+func runRemoveClient(sock, name string) {
+	var res struct {
+		OK    string `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := controlDo(sock, http.MethodDelete, "/tailnet/"+name, nil, &res); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if res.Error != "" {
+		fmt.Fprintln(os.Stderr, "remove: "+res.Error)
+		os.Exit(1)
+	}
+	fmt.Println(res.OK)
+	fmt.Printf("re-add anytime: sudo ts-multinet add %s — logs back in without a browser\n", name)
 }
 
 func runLoginClient(sock, tailnet string) {
