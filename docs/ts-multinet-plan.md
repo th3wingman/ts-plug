@@ -72,12 +72,18 @@ Environment verified: resolved stub on 127.0.0.53:53 (so 127.0.0.1:53 free),
 resolvectl present, tailscale0 per-link DNS pattern confirmed. Daemon running
 current binary (md5-verified against build).
 
-Blocked on: **completing the skynet login**. Node sits in NeedsLogin; auth
-attempts so far died on expired/superseded URLs (each StartLoginInteractive
-invalidates the previous session — fixed in 5a07247, needs reinstall).
-Next: reinstall, click Login once, auth the URL immediately. If auth completes
-but state doesn't flip: check admin console → Machines for
-`ts-multinet-skynet` (device approval), and what the browser page reported.
+Blocked on: **completing the skynet login**. Root cause found and fixed by
+bisect: `tailscale.com v1.94.2` (our pinned dependency) never consumes a
+completed browser auth — the control plane approves, the node stays
+NeedsLogin forever. A standalone probe on the same host/tailnet/account with
+`v1.102.3` (cauldron's version) flipped to Running seconds after auth.
+Bumped to v1.102.3 in `e30e443` (gvisor bump included; `udp.NewForwarder`
+now returns handled-bool, unknown dsts yield ICMP unreachable).
+
+Next: reinstall (`sudo ./scripts/install-ts-multinet.sh` — keeps config and
+node state), auth the fresh URL the node prints at boot (the no-invalidate
+login fix means repeated Login clicks return the same pending URL), then
+walk the checklist below.
 
 Then, per the acceptance checklist:
 
