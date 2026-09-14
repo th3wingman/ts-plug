@@ -46,7 +46,22 @@ func controlDo(sock, method, path string, body any, out any) error {
 		return fmt.Errorf("no daemon at %s — is it running? (%w)", sock, err)
 	}
 	defer resp.Body.Close()
-	return json.NewDecoder(resp.Body).Decode(out)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// the daemon answers {"error": "..."} on 4xx/5xx, but a plain-text
+		// body (stale daemon, wrong route) must not leak as a json decode error
+		var e struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(b, &e) == nil && e.Error != "" {
+			return fmt.Errorf("daemon: %s", e.Error)
+		}
+		return fmt.Errorf("daemon: %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return json.Unmarshal(b, out)
 }
 
 // controlGet queries the daemon's unix socket and decodes JSON into out.

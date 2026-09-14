@@ -152,7 +152,10 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now ts-multinet
+systemctl enable ts-multinet
+# enable --now does NOT restart an already-running daemon — without this,
+# an upgrade install leaves the old process serving the old binary
+systemctl restart ts-multinet
 
 if ! command -v resolvectl >/dev/null 2>&1 || [ ! -d /run/systemd/resolve ]; then
     echo "note: systemd-resolved not detected — host DNS will be skipped;"
