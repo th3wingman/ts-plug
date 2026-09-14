@@ -566,8 +566,11 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		state, loginURL := tn.status()
 		ts := tailnetStatusJSON{Name: tn.conf.Name, Suffix: tn.suffix, CIDR: tn.conf.CIDR, Hostname: tn.conf.nodeHostname(), AssignedIP: tn.assignedIP, State: state, LoginURL: loginURL, Selected: tn.selectedCount()}
 		if st, err := tn.lc.Status(r.Context()); err == nil {
-			ts.Peers = len(st.Peer)
 			for _, p := range st.Peer {
+				if isMullvad(p.DNSName) {
+					continue // shared transit, not resources — same filter as `peers`
+				}
+				ts.Peers++
 				if p.Online {
 					ts.Up++
 				}
