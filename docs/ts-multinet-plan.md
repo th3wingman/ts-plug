@@ -39,6 +39,8 @@ systemd restarts; daemon owns the config file but manual edits survive.
 | Races | starts retry briefly-held TUN names (systemd restart overlap with the dying daemon) | `5cae8ac` |
 | UX | parked tailnets (in config, not running) get "`reload` retries it" instead of "no such tailnet" | `110ad77` |
 | Docs | plan status updates | `a837866` |
+| CLI | `--json` / `--details` flags on every command (raw replies, JSONL multi-peer, extended human forms); peers replies carry FQDN | `872c1c3` |
+| DNS hardening | routing domains set before the DNS server at registration; forwarder prefers real upstreams (`/run/systemd/resolve/resolv.conf`) over the resolved stub — no forwarding loop | `a593d09` |
 
 All unit gates green per commit: `go build ./...`, `go vet`, `go test ./cmd/ts-multinet/ -count=1`.
 
@@ -94,34 +96,14 @@ Verified live on this host (three tailnets, real logins):
 5. ✅ CLI `--json` / `--details` flags (status/peers/check/config + mutations);
    peers replies carry FQDN
 
-## In flight (uncommitted, in the working tree)
+## In flight
 
-- **CLI flags lane** (`--json`/`--details`): a worker agent is finishing it —
-  `cliOpts` runner rework in `controlclient.go`, flag wiring + usage in
-  `ts-multinet.go`, formatters as pure functions + tests, `peerJSON.FQDN` wire
-  field, README CLI section. It died once on a transient API error and was
-  resumed (run `c6971b2c`); its gates: build/vet/test on the real exit code.
-  On completion: review diff, commit (repo style), then the items below.
-- **resolved registration order** (parent edit, done, uncommitted in
-  `resolved.go`): `resolvectl domain` lands BEFORE `resolvectl dns` — closes
-  the restart-window gap where a tsm link briefly had a DNS server without
-  routing domains (general traffic could reach us; with our upstream being
-  the resolved stub, a forwarding loop). Commit with the item below.
-- **upstream hardening** (parent, NOT started — blocked on the CLI worker
-  owning `ts-multinet.go`): the DNS responder's upstream defaults to the first
-  nameserver in `/etc/resolv.conf` = the resolved stub (127.0.0.53). Prefer
-  `/run/systemd/resolve/resolv.conf` (the real upstream servers) when present
-  so we can never loop back into resolved. Touch: the upstream selection near
-  `firstNameserver` in `ts-multinet.go`.
+Nothing — the CLI flags lane (`872c1c3`) and both DNS hardening pieces
+(`a593d09`) are merged.
 
 ## Pick up here (next session)
 
-1. Confirm the CLI-flags worker merged cleanly (or finish its tree state:
-   `git status` shows controlclient.go/ts-multinet.go/control.go partial).
-   Gates, commit.
-2. Apply the upstream hardening (above), commit together with the
-   registration-order fix already in `resolved.go`.
-3. **Reinstall + verify on this host**: `sudo ./scripts/install-ts-multinet.sh`
+1. **Reinstall + verify on this host**: `sudo ./scripts/install-ts-multinet.sh`
    (restarts the daemon; all fixes land; msinfra should self-start via the
    TUN-retry). Then:
    - `sudo ts-multinet status` → three tailnets Running
@@ -129,14 +111,14 @@ Verified live on this host (three tailnets, real logins):
      (Chrome test); `resolvectl` shows per-link only, no global 127.0.0.1
    - `ts-multinet --json status | jq .` and `-details peers skynet` smoke
    - allow-all on/off once, domain set/clear once
-4. User housekeeping (not code): `sudo resolvectl revert` clears three stale
+2. User housekeeping (not code): `sudo resolvectl revert` clears three stale
    **global** `DNS Servers: 127.0.0.1` entries left by an early build (the
    Chrome NXDOMAIN during restarts — inert while the daemon runs); delete the
    `tsm-probe` device from the SkyNet console (bisect artifact); regular
    `tailscaled` on this host was stopped for a clean system — restart any
    time, it coexists by design.
-5. **PR** from `ts-plug/multinet-host-mode` once 3 passes (git hard gate:
-   ask the user first; sample recent PR bodies first).
+3. **PR** from `ts-plug/multinet-host-mode` once the verification passes (git
+   hard gate: ask the user first; sample recent PR bodies first).
 
 ## Backlog (not in scope of this plan)
 
