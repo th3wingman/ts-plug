@@ -73,7 +73,7 @@ func TestResolveSelectionsPinsAndReResolves(t *testing.T) {
 	)
 
 	pins := pinStore{}
-	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, pins)
+	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, nil, pins)
 	if len(errs) != 0 || len(resolved) != 1 || !changed {
 		t.Fatalf("resolved=%v errs=%v changed=%v", resolved, errs, changed)
 	}
@@ -86,7 +86,7 @@ func TestResolveSelectionsPinsAndReResolves(t *testing.T) {
 	}
 
 	// Second run against the same peer: stable, no churn.
-	_, errs, changed = resolveSelections(skynetSuffix, conf, st, pins)
+	_, errs, changed = resolveSelections(skynetSuffix, conf, st, nil, pins)
 	if len(errs) != 0 || changed {
 		t.Fatalf("re-resolve should be a no-op: errs=%v changed=%v", errs, changed)
 	}
@@ -95,7 +95,7 @@ func TestResolveSelectionsPinsAndReResolves(t *testing.T) {
 func TestResolveSelectionsMissingPeerIsLoud(t *testing.T) {
 	conf := TailnetConf{Name: "skynet", Resources: []string{"ghost"}}
 	st := mkStatus(peer("node-one", "nucbox."+skynetSuffix+".", "100.64.0.10"))
-	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, pinStore{})
+	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, nil, pinStore{})
 	if len(resolved) != 0 || len(errs) != 1 || changed {
 		t.Fatalf("resolved=%v errs=%v changed=%v", resolved, errs, changed)
 	}
@@ -109,7 +109,7 @@ func TestResolveSelectionsIdentityChangeRejected(t *testing.T) {
 	st := mkStatus(peer("node-two", "nucbox."+skynetSuffix+".", "100.64.0.99"))
 	pins := pinStore{"nucbox": {FQDN: "nucbox." + skynetSuffix, Target: "node-one", Addr: "100.64.0.10"}}
 
-	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, pins)
+	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, nil, pins)
 	if len(resolved) != 0 || len(errs) != 1 || changed {
 		t.Fatalf("resolved=%v errs=%v changed=%v", resolved, errs, changed)
 	}
@@ -123,7 +123,7 @@ func TestResolveSelectionsRenameFollowsNode(t *testing.T) {
 	st := mkStatus(peer("node-one", "renamed."+skynetSuffix+".", "100.64.0.10"))
 	pins := pinStore{"renamed": {FQDN: "oldname." + skynetSuffix, Target: "node-one", Addr: "100.64.0.10"}}
 
-	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, pins)
+	resolved, errs, changed := resolveSelections(skynetSuffix, conf, st, nil, pins)
 	if len(errs) != 0 || len(resolved) != 1 || !changed {
 		t.Fatalf("resolved=%v errs=%v changed=%v", resolved, errs, changed)
 	}
@@ -139,7 +139,7 @@ func TestResolveSelectionsAllowAllSkipsMullvad(t *testing.T) {
 		peer("node-m", "us-den-wg-205.mullvad.ts.net.", "100.104.130.39"),
 		peer("node-two", "zombie."+skynetSuffix+".", "100.64.0.11"),
 	)
-	resolved, errs, _ := resolveSelections(skynetSuffix, conf, st, pinStore{})
+	resolved, errs, _ := resolveSelections(skynetSuffix, conf, st, nil, pinStore{})
 	if len(errs) != 0 || len(resolved) != 2 {
 		t.Fatalf("resolved=%v errs=%v — Mullvad peer must be excluded", resolved, errs)
 	}

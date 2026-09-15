@@ -109,13 +109,17 @@ func runStatusClient(c cliOpts) {
 		return
 	}
 	if c.details {
-		// the effective domain comes from the config (status does not carry it)
+		// the effective domain comes from the config (status does not carry it);
+		// the service breakdown is best-effort — an unavailable list must not
+		// fail status itself.
 		var cfg Config
 		if err := controlGet(c.sock, "/config", &cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Print(formatStatusDetails(sts, cfg))
+		var svcs []tailnetServicesJSON
+		_ = controlGet(c.sock, "/services", &svcs)
+		fmt.Print(formatStatusDetails(sts, cfg, svcs))
 		return
 	}
 	fmt.Print(formatStatusTable(sts))
@@ -131,7 +135,7 @@ func formatStatusTable(sts []tailnetStatusJSON) string {
 	return b.String()
 }
 
-func formatStatusDetails(sts []tailnetStatusJSON, cfg Config) string {
+func formatStatusDetails(sts []tailnetStatusJSON, cfg Config, svcs []tailnetServicesJSON) string {
 	var b strings.Builder
 	for _, s := range sts {
 		domain := ""
@@ -145,11 +149,126 @@ func formatStatusDetails(sts []tailnetStatusJSON, cfg Config) string {
 		fmt.Fprintf(&b, "  our ip    %s\n", orDefault(s.AssignedIP, "—"))
 		fmt.Fprintf(&b, "  cidr      %s\n", s.CIDR)
 		fmt.Fprintf(&b, "  peers     %d up / %d total, %d selected\n", s.Up, s.Peers, s.Selected)
+		if tp := servicesFor(svcs, s.Name); tp != nil {
+			fmt.Fprintf(&b, "  services  %d advertised / %d selected\n", len(tp.Services), selectedServices(tp.Services))
+		}
 		if s.LoginURL != "" {
 			fmt.Fprintf(&b, "  login     %s\n", s.LoginURL)
 		}
 	}
 	return b.String()
+}
+
+// runServicesClient lists the advertised VIP services the daemon can see on
+// each tailnet (optionally one), with their selection state.
+func runServicesClient(c cliOpts, tailnet string) {
+	var tss []tailnetServicesJSON
+	if err := controlGet(c.sock, "/services", &tss); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if tailnet != "" {
+		var filtered []tailnetServicesJSON
+		for _, ts := range tss {
+			if strings.EqualFold(ts.Name, tailnet) {
+				filtered = append(filtered, ts)
+			}
+		}
+		if len(filtered) == 0 {
+			fmt.Fprintf(os.Stderr, "%s: no such tailnet\n", tailnet)
+			os.Exit(1)
+		}
+		tss = filtered
+	}
+	if c.json {
+		emitJSON(tss)
+		return
+	}
+	if c.details {
+		fmt.Print(formatServicesDetails(tss))
+		return
+	}
+	fmt.Print(formatServicesTable(tss))
+}
+
+// servicesFor finds one tailnet's service entry, or nil when the daemon
+// reported none for it.
+func servicesFor(tss []tailnetServicesJSON, name string) *tailnetServicesJSON {
+	for i := range tss {
+		if tss[i].Name == name {
+			return &tss[i]
+		}
+	}
+	return nil
+}
+
+func selectedServices(ss []serviceJSON) int {
+	n := 0
+	for _, s := range ss {
+		if s.Selected {
+			n++
+		}
+	}
+	return n
+}
+
+func formatServicesTable(tss []tailnetServicesJSON) string {
+	var b strings.Builder
+	total := 0
+	for _, ts := range tss {
+		total += len(ts.Services)
+		fmt.Fprintf(&b, "\n== %s (%s) — %d service%s ==\n", ts.Name, ts.Suffix, len(ts.Services), plural(len(ts.Services)))
+		if len(ts.Services) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "  %-5s %-22s %-20s %-16s %s\n", "SEL", "NAME", "DISPLAY", "VIP", "PORTS")
+		for _, s := range ts.Services {
+			fmt.Fprintf(&b, "  %-5s %-22s %-20s %-16s %s\n", selMark(s.Selected), truncate(s.Name, 22), truncate(s.DisplayName, 20), orDefault(firstVIP(s), "—"), orDefault(strings.Join(s.Ports, " "), "—"))
+		}
+	}
+	if total == 0 {
+		b.WriteString("\nno advertised services visible — service visibility is ACL-gated on the tailnet\n")
+	}
+	return b.String()
+}
+
+func formatServicesDetails(tss []tailnetServicesJSON) string {
+	var b strings.Builder
+	for _, ts := range tss {
+		fmt.Fprintf(&b, "\n== %s (%s) ==\n", ts.Name, ts.Suffix)
+		if len(ts.Services) == 0 {
+			b.WriteString("  (none visible — service visibility is ACL-gated)\n")
+			continue
+		}
+		for _, s := range ts.Services {
+			fmt.Fprintf(&b, "  %s — %s\n", s.Name, s.DisplayName)
+			fmt.Fprintf(&b, "    selected  %v\n", s.Selected)
+			fmt.Fprintf(&b, "    vips      %s\n", orDefault(strings.Join(s.VIPs, ", "), "—"))
+			fmt.Fprintf(&b, "    ports     %s\n", orDefault(strings.Join(s.Ports, ", "), "—"))
+		}
+	}
+	return b.String()
+}
+
+func firstVIP(s serviceJSON) string {
+	if len(s.VIPs) == 0 {
+		return ""
+	}
+	return s.VIPs[0]
+}
+
+func selMark(sel bool) string {
+	if sel {
+		return "[x]"
+	}
+	return "[ ]"
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func runPeersClient(c cliOpts, filter, ports string) {

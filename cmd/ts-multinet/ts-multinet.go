@@ -115,6 +115,12 @@ func main() {
 				ports = ""
 			}
 			runPeersClient(cli, filter, ports)
+		case "services":
+			tailnet := ""
+			if len(args) >= 2 {
+				tailnet = args[1]
+			}
+			runServicesClient(cli, tailnet)
 		case "check":
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "usage: ts-multinet check <host[:port]>")
@@ -295,11 +301,12 @@ usage:
   ts-multinet [flags]                 run the daemon (TUNs + DNS + forwarders + control socket)
   ts-multinet [flags] status          show tailnets, states, assigned IPs, selections
   ts-multinet [flags] peers [filter]  list peers and probe their services
+  ts-multinet [flags] services [tailnet]  list advertised VIP services (never probed)
   ts-multinet [flags] check <host[:port]>  diagnose one target end-to-end
   ts-multinet [flags] login [tailnet]  start browser login for a tailnet (or list what needs one)
   ts-multinet [flags] reload           re-read the config and apply it live — tailnets included
-  ts-multinet [flags] select <tailnet> <peer>...   expose peers on a tailnet
-  ts-multinet [flags] forget <tailnet> <peer>...   stop exposing peers
+  ts-multinet [flags] select <tailnet> <peer|svc:label>...   expose peers/services
+  ts-multinet [flags] forget <tailnet> <peer|svc:label>...   stop exposing them
   ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
   ts-multinet [flags] domain <tailnet> [name|-]     set (or print) the friendly DNS suffix; - clears it
   ts-multinet [flags] hostname <tailnet> [name|-]   set (or print) the node name in the tailnet; - clears it

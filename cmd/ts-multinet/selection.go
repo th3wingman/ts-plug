@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 )
 
 // selectedResource is one config selection resolved against a tailnet's live
@@ -91,11 +92,14 @@ func peerShort(dnsName, suffix string) string {
 }
 
 // resolveSelections maps a tailnet's configured selections (explicit resources
-// plus allow_all) to pinned peers from the live status. Missing peers and
+// plus allow_all) to pinned peers from the live status, and to advertised
+// services from the live service list. Missing peers, missing services, and
 // identity mismatches are reported as errors and skipped loudly — never
 // silently redirected. Returns the resolved set, the errors, and whether any
-// pin was added or updated (caller persists on change).
-func resolveSelections(suffix string, conf TailnetConf, st *ipnstate.Status, pins pinStore) (resolved []selectedResource, errs []string, changed bool) {
+// pin was added or updated (caller persists on change). Services are not
+// pinned: their svc: name is the identity, so a vanished one surfaces like a
+// missing peer.
+func resolveSelections(suffix string, conf TailnetConf, st *ipnstate.Status, services map[tailcfg.ServiceName]tailcfg.ServiceDetails, pins pinStore) (resolved []selectedResource, errs []string, changed bool) {
 	if st == nil {
 		return nil, []string{"no peer status"}, false
 	}
@@ -126,6 +130,19 @@ func resolveSelections(suffix string, conf TailnetConf, st *ipnstate.Status, pin
 	}
 
 	for _, short := range want {
+		if isServiceResource(short) {
+			sd, ok := services[tailcfg.ServiceName(short)]
+			if !ok {
+				errs = append(errs, fmt.Sprintf("%s: not an advertised service on %s (run `services %s` to see what exists)", short, conf.Name, conf.Name))
+				continue
+			}
+			addr := ""
+			if len(sd.Addrs) > 0 {
+				addr = sd.Addrs[0].String()
+			}
+			resolved = append(resolved, selectedResource{Short: short, FQDN: serviceFQDN(sd.Name, suffix), Addr: addr})
+			continue
+		}
 		p := byShort[short]
 		if p == nil {
 			errs = append(errs, fmt.Sprintf("%s: not a peer on %s (run `peers %s` to see what exists)", short, conf.Name, conf.Name))

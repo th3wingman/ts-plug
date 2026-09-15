@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 )
 
 // probeTimeout bounds each per-port reachability check.
@@ -60,10 +61,23 @@ type Daemon struct {
 	// peerShorts lists a tailnet's selectable peer short names. A field so
 	// control tests can stub the live tsnet status.
 	peerShorts func(ctx context.Context, tn *Tailnet) ([]string, error)
+
+	// services is the live advertised-service discovery. A field so control
+	// tests can stub the service list the way they stub peerShorts.
+	services func(ctx context.Context, tn *Tailnet) (map[tailcfg.ServiceName]tailcfg.ServiceDetails, error)
 }
 
 func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
-	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, tunRetries: map[string]bool{}}
+	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, services: liveServices, tunRetries: map[string]bool{}}
+}
+
+// serviceList runs the swappable service discovery, tolerating a parked or
+// test-stub tailnet (no lc, no discovery func) as an empty list.
+func (d *Daemon) serviceList(ctx context.Context, tn *Tailnet) (map[tailcfg.ServiceName]tailcfg.ServiceDetails, error) {
+	if d.services == nil || tn == nil {
+		return nil, nil
+	}
+	return d.services(ctx, tn)
 }
 
 // livePeerShorts is the production peerShorts: live status, Mullvad exits
@@ -301,7 +315,11 @@ func (d *Daemon) applySelections() {
 			continue
 		}
 		conf := d.confFor(tn.conf.Name)
-		resolved, errs, changed := resolveSelections(tn.suffix, conf, st, pins)
+		svcs, err := d.serviceList(context.Background(), tn)
+		if err != nil {
+			slog.Warn("service discovery failed", "name", tn.conf.Name, "err", err)
+		}
+		resolved, errs, changed := resolveSelections(tn.suffix, conf, st, svcs, pins)
 		for _, e := range errs {
 			slog.Error("selection skipped", "name", tn.conf.Name, "resource", e)
 		}
@@ -326,7 +344,7 @@ func (d *Daemon) applySelections() {
 			}
 			entries = append(entries, hostsEntry{
 				IP:      ip.String(),
-				Alias:   r.Short + "." + conf.domainName(),
+				Alias:   resourceAlias(r.Short, conf.domainName()),
 				FQDN:    r.FQDN,
 				Tailnet: conf.Name,
 			})
@@ -528,6 +546,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /peers", d.handlePeers)
+	mux.HandleFunc("GET /services", d.handleServices)
 	mux.HandleFunc("GET /check", d.handleCheck)
 	mux.HandleFunc("GET /config", d.handleConfig)
 	mux.HandleFunc("POST /config", d.handleUpdateConfig)
@@ -645,6 +664,49 @@ func (d *Daemon) handlePeers(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		out = append(out, tp)
+	}
+	writeJSON(w, out)
+}
+
+// handleServices lists the advertised VIP services visible to each tailnet,
+// alongside whether the config already selects them. Advertised Ports are
+// shown as metadata — services are never port-probed.
+func (d *Daemon) handleServices(w http.ResponseWriter, r *http.Request) {
+	// Snapshot the running set under the lock, same as handlePeers.
+	d.mu.Lock()
+	tailnets := append([]*Tailnet(nil), d.tailnets...)
+	d.mu.Unlock()
+	out := make([]tailnetServicesJSON, 0, len(tailnets))
+	for _, tn := range tailnets {
+		ts := tailnetServicesJSON{Name: tn.conf.Name, Suffix: tn.suffix}
+		svcs, err := d.serviceList(r.Context(), tn)
+		if err != nil {
+			// The tailnet is visible even if its service list is not (not
+			// Running yet, or discovery unavailable): report it empty rather
+			// than failing the whole request.
+			out = append(out, ts)
+			continue
+		}
+		conf := d.confFor(tn.conf.Name)
+		for _, name := range serviceNames(svcs) {
+			sd := svcs[tailcfg.ServiceName(name)]
+			vips := make([]string, 0, len(sd.Addrs))
+			for _, a := range sd.Addrs {
+				vips = append(vips, a.String())
+			}
+			ports := make([]string, 0, len(sd.Ports))
+			for _, p := range sd.Ports {
+				ports = append(ports, p.String())
+			}
+			ts.Services = append(ts.Services, serviceJSON{
+				Name:        name,
+				DisplayName: orDefault(sd.DisplayName, name),
+				VIPs:        vips,
+				Ports:       ports,
+				Selected:    slices.Contains(conf.Resources, name),
+			})
+		}
+		out = append(out, ts)
 	}
 	writeJSON(w, out)
 }
@@ -1026,7 +1088,15 @@ func (d *Daemon) handleSelect(w http.ResponseWriter, r *http.Request) {
 		if req.Peer == "" {
 			return clientError{"peer is required"}
 		}
-		if !slices.Contains(peers, req.Peer) {
+		if isServiceResource(req.Peer) {
+			svcs, err := d.serviceList(r.Context(), d.tailnetByName(tc.Name))
+			if err != nil {
+				return clientError{fmt.Sprintf("advertised services unavailable on %s: %v", tc.Name, err)}
+			}
+			if _, ok := svcs[tailcfg.ServiceName(req.Peer)]; !ok {
+				return clientError{fmt.Sprintf("unknown service %q (services: %s)", req.Peer, strings.Join(serviceNames(svcs), ", "))}
+			}
+		} else if !slices.Contains(peers, req.Peer) {
 			return clientError{fmt.Sprintf("unknown peer %q (peers: %s)", req.Peer, strings.Join(peers, ", "))}
 		}
 		if !slices.Contains(tc.Resources, req.Peer) {

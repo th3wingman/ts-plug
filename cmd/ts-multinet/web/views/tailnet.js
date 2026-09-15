@@ -39,6 +39,7 @@ export function renderTailnet(root, name, tab) {
 
   const s = state.status.find((x) => x.name === name) || null;
   const tc = confFor(name);
+  const activeTab = tab === "settings" || tab === "services" ? tab : "peers";
   root.replaceChildren();
 
   if (!s && !inConfig(name)) {
@@ -84,28 +85,27 @@ export function renderTailnet(root, name, tab) {
     h(
       "nav",
       { class: "subtabs" },
-      h(
-        "a",
-        {
-          class: "subtabs__btn" + (tab === "settings" ? "" : " is-active"),
-          href: `#/tailnet/${encodeURIComponent(name)}`,
-        },
-        "Peers",
-      ),
-      h(
-        "a",
-        {
-          class: "subtabs__btn" + (tab === "settings" ? " is-active" : ""),
-          href: `#/tailnet/${encodeURIComponent(name)}/settings`,
-        },
-        "Settings",
+      ...[
+        ["peers", "", "Peers"],
+        ["services", "/services", "Services"],
+        ["settings", "/settings", "Settings"],
+      ].map(([key, path, label]) =>
+        h(
+          "a",
+          {
+            class: "subtabs__btn" + (activeTab === key ? " is-active" : ""),
+            href: `#/tailnet/${encodeURIComponent(name)}${path}`,
+          },
+          label,
+        ),
       ),
     ),
   );
 
   const body = h("div", { id: "detail-body" });
   root.append(body);
-  if (tab === "settings") renderSettings(body, name, s, tc);
+  if (activeTab === "settings") renderSettings(body, name, s, tc);
+  else if (activeTab === "services") renderServices(body, name, s, tc);
   else renderPeers(body, name, s, tc);
 }
 
@@ -278,6 +278,134 @@ function renderPeers(root, name, s, tc) {
           h("th", {}, "os"),
           h("th", {}, "state"),
           h("th", {}, "services"),
+        ),
+      ),
+      tbody,
+    ),
+  );
+
+  renderRows();
+}
+
+// --- services ----------------------------------------------------------------
+
+// Advertised VIP services visible to this tailnet. Selection uses the same
+// select/forget endpoints as peers (the svc: name is the resource); the Ports
+// column is advertised metadata — services are never port-probed.
+function renderServices(root, name, s, tc) {
+  const tp = state.services.find((x) => x.name === name);
+  const services = tp?.services || [];
+  const selected = new Set(tc.resources || []);
+  const tbody = h("tbody");
+  const count = h("span", { class: "hint" });
+
+  const filter = state.svcFilter[name] || "";
+  const matches = (svc) =>
+    !filter ||
+    (svc.name || "").toLowerCase().includes(filter) ||
+    (svc.display_name || "").toLowerCase().includes(filter);
+
+  const renderRows = () => {
+    tbody.replaceChildren();
+    const hit = services.filter(matches);
+
+    for (const svc of hit) {
+      const box = tc.allow_all
+        ? h("input", {
+            type: "checkbox",
+            checked: true,
+            disabled: true,
+            title: "allow-all selects every peer",
+          })
+        : h("input", {
+            type: "checkbox",
+            "aria-label": "select " + svc.name,
+            ...(selected.has(svc.name) ? { checked: true } : {}),
+            onchange: (e) => togglePeer(name, svc.name, e.target.checked),
+          });
+      tbody.append(
+        h(
+          "tr",
+          {},
+          h("td", {}, box),
+          h("td", {}, svc.name || "(unnamed)"),
+          h("td", {}, svc.display_name || "—"),
+          h("td", {}, (svc.vips || []).join(", ") || "—"),
+          h("td", {}, (svc.ports || []).join(" ") || "—"),
+        ),
+      );
+    }
+
+    if (!hit.length) {
+      const note = !tp
+        ? "services unavailable"
+        : services.length
+          ? "no services match the filter"
+          : "no advertised services visible — service visibility is ACL-gated on the tailnet";
+      tbody.append(h("tr", {}, h("td", { colspan: "5", class: "empty" }, note)));
+    }
+    const sel = services.filter((x) => selected.has(x.name)).length;
+    count.textContent = `${hit.length} shown · ${sel} selected`;
+  };
+
+  const search = h("input", {
+    class: "search",
+    placeholder: "filter by name or display name",
+    spellcheck: "false",
+    value: filter,
+    "aria-label": "filter services",
+    oninput: (e) => {
+      state.svcFilter[name] = e.target.value.trim().toLowerCase();
+      renderRows(); // rows only — the input keeps focus
+    },
+  });
+
+  root.append(h("div", { class: "toolbar" }, search, count));
+  root.append(
+    h(
+      "p",
+      { class: "hint" },
+      "ports are what the service advertises — services are never port-probed",
+    ),
+  );
+
+  if (state.peerErr[name]) {
+    root.append(h("div", { class: "msg msg--error" }, state.peerErr[name]));
+  }
+  if (tc.allow_all) {
+    root.append(
+      h(
+        "p",
+        { class: "hint" },
+        "allow-all selects every peer; services stay on their own checkboxes",
+      ),
+    );
+  }
+  if (!s || s.state !== "Running") {
+    root.append(
+      h(
+        "p",
+        { class: "hint" },
+        "the node is not Running yet — services appear after login",
+      ),
+    );
+  }
+
+  root.append(
+    h(
+      "table",
+      {},
+      h(
+        "thead",
+        {},
+        h(
+          "tr",
+          {},
+          h("th", {}, ""),
+          h("th", {}, "name"),
+          h("th", {}, "display"),
+          h("th", {}, "vip"),
+          h("th", {}, "ports"),
         ),
       ),
       tbody,

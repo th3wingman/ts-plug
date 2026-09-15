@@ -17,8 +17,11 @@ func TestFormattersAndJSONOutput(t *testing.T) {
 	}}
 	cfg := Config{Tailnets: []TailnetConf{{Name: "skynet", Domain: "skynet"}}}
 
-	d := formatStatusDetails(sts, cfg)
-	for _, want := range []string{"skynet — Running", "hostname  xps13-m", "domain    skynet", "login     https://login.tailscale.com/a/x", "11 selected"} {
+	d := formatStatusDetails(sts, cfg, []tailnetServicesJSON{{
+		Name: "skynet", Suffix: "tail95e9d1.ts.net",
+		Services: []serviceJSON{{Name: "svc:db", Selected: true}, {Name: "svc:web"}},
+	}})
+	for _, want := range []string{"skynet — Running", "hostname  xps13-m", "domain    skynet", "login     https://login.tailscale.com/a/x", "11 selected", "2 advertised / 1 selected"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("status details missing %q:\n%s", want, d)
 		}
@@ -57,5 +60,41 @@ func TestFormattersAndJSONOutput(t *testing.T) {
 	}
 	if back[0].Hostname != "xps13-m" || back[0].LoginURL != "https://login.tailscale.com/a/x" {
 		t.Fatalf("json round-trip lost fields: %+v", back[0])
+	}
+}
+
+// The services human forms must show the selection state, the VIP and the
+// advertised ports, and --json must round-trip the whole reply.
+func TestServicesFormatters(t *testing.T) {
+	tss := []tailnetServicesJSON{{
+		Name: "skynet", Suffix: "tail95e9d1.ts.net",
+		Services: []serviceJSON{{
+			Name: "svc:my-db", DisplayName: "my database",
+			VIPs: []string{"100.64.0.5", "fd7a::5"}, Ports: []string{"tcp:5432"}, Selected: true,
+		}},
+	}}
+	table := formatServicesTable(tss)
+	for _, want := range []string{"svc:my-db", "my database", "100.64.0.5", "tcp:5432", "[x]"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("services table missing %q:\n%s", want, table)
+		}
+	}
+	details := formatServicesDetails(tss)
+	for _, want := range []string{"selected  true", "fd7a::5", "tcp:5432"} {
+		if !strings.Contains(details, want) {
+			t.Errorf("services details missing %q:\n%s", want, details)
+		}
+	}
+	// empty state must name the reason, not print a phantom table
+	if empty := formatServicesTable([]tailnetServicesJSON{{Name: "corp"}}); !strings.Contains(empty, "ACL-gated") {
+		t.Errorf("empty services table must explain ACL gating:\n%s", empty)
+	}
+
+	var back []tailnetServicesJSON
+	if err := json.Unmarshal([]byte(marshalPretty(tss)), &back); err != nil {
+		t.Fatalf("services marshalPretty not valid JSON: %v", err)
+	}
+	if len(back) != 1 || len(back[0].Services) != 1 || !back[0].Services[0].Selected || back[0].Services[0].Ports[0] != "tcp:5432" {
+		t.Fatalf("services json round-trip lost fields: %+v", back)
 	}
 }

@@ -94,7 +94,7 @@ interface. A hand-written entry (if you prefer files) looks like:
       "cidr": "198.18.1.0/24",        // synthetic range, unique per tailnet
       "tun": "tsm0",                   // <= 15 chars
       // "domain": "example",               // friendly DNS suffix (default: the name)
-      // "resources": ["host1", "host2"],  // short names as `peers` shows them
+      // "resources": ["host1", "svc:db"],  // peer short names, or svc:<label> services
       // "allow_all": true,                // or: every peer (Mullvad exits never)
     },
   ]
@@ -123,6 +123,14 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   renamed or replaced peer under the same name fails loudly instead of
   silently redirecting (delete the pin in `<state_dir>/<tailnet>/selections.json`
   to re-select).
+- **Advertised services** — Tailscale `svc:<label>` VIP services are
+  selectable alongside peers: `resources` accepts `svc:<label>` (or
+  `sudo ts-multinet select <tailnet> svc:<label>`, or the UI's **Services**
+  tab), and the name resolves under both spellings — `<label>.<domain>` and
+  `<label>.<suffix>` — to its own synthetic IP. Discovery is ACL-gated: only
+  services this node may use appear in `ts-multinet services <tailnet>`. Unlike
+  peers, services are not identity-pinned (the `svc:` name is the identity)
+  and are never port-probed — the advertised ports are shown as metadata.
 - **`/etc/hosts` managed block** — every selected resource gets a line between
   `# ts-multinet begin` / `# ts-multinet end`, pointing both the friendly alias
   and the full MagicDNS name at the resource's synthetic IP:
@@ -153,10 +161,13 @@ layout, hash routes:
 - **Tailnet detail** (`#/tailnet/<name>`) — **Peers**: name/FQDN filter, a
   200-row render cap with a "show all" toggle, per-row selection checkboxes,
   and a **probe** button that is the *only* path that dials ports (the 5s poll
-  never does). **Settings** (`#/tailnet/<name>/settings`): domain, hostname,
-  allow-all, resource chips, plus structural **cidr/tun** — applying those
-  restarts just that tailnet (node state and login survive). Danger zone
-  removes the tailnet, keeping node state.
+  never does). **Services** (`#/tailnet/<name>/services`): advertised VIP
+  services with their VIP, advertised ports, a name/display filter, and
+  selection checkboxes (ACL-gated; never probed). **Settings**
+  (`#/tailnet/<name>/settings`): domain, hostname, allow-all, resource chips,
+  plus structural **cidr/tun** — applying those restarts just that tailnet
+  (node state and login survive). Danger zone removes the tailnet, keeping
+  node state.
 - **Config** (`#/config`) — globals (`mtu`, `dns_listen`, `upstream_dns`,
   `ui_listen`, `hosts_file`) with a needs-restart note on the ones that need
   one, the add-tailnet form (cidr/tun/domain/hostname optional), and a
@@ -303,10 +314,12 @@ no state/`:53`/authkey collisions:
 docker exec tsm ts-multinet status              # tailnets, states, assigned IPs, selections
 docker exec tsm ts-multinet peers               # all hosts + probed services (Mullvad exits hidden)
 docker exec tsm ts-multinet peers rpi4          # name filter
+docker exec tsm ts-multinet services            # advertised VIP services per tailnet
 docker exec tsm -ports 22,5432,3000 ts-multinet peers db
 docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
 docker exec tsm ts-multinet reload              # after editing selection config
 sudo ts-multinet select skynet rpi4-sk-01       # expose a peer (patches the config in place)
+sudo ts-multinet select skynet svc:my-db        # expose an advertised service too
 sudo ts-multinet --json status | jq '.[] | select(.state=="Running")'
 sudo ts-multinet -details peers dev              # FQDN column + services
 sudo ts-multinet --json check nucbox.skynet:22   # raw fields for scripting
@@ -314,9 +327,10 @@ sudo ts-multinet --json check nucbox.skynet:22   # raw fields for scripting
 
 Every command takes `--json` (machine-readable stdout; errors stay on stderr,
 exit codes unchanged) and `--details` (extended human output — a per-tailnet
-block for `status`, the FQDN column for `peers`, raw fields for `check`; the
-JSON replies already carry these fields). Multi-peer `select`/`forget` with
-`--json` emit one object per line.
+block for `status` with an advertised-services count, the FQDN column for
+`peers`, per-service VIP/port blocks for `services`, raw fields for `check`;
+the JSON replies already carry these fields). Multi-peer `select`/`forget`
+with `--json` emit one object per line.
 sudo ts-multinet forget skynet rpi4-sk-01       # stop exposing it
 sudo ts-multinet allow-all msinfra on           # every non-Mullvad peer
 sudo ts-multinet domain msinfra                 # print the friendly suffix (set: domain msinfra <name>)

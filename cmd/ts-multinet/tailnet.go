@@ -107,14 +107,17 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	}
 	reg.registerDomain(conf.Name, conf.domainName())
 
-	resolve := newTailnetResolver(lc)
-	reg.registerResolver(conf.Name, resolve)
-
 	// Per-tailnet ctx so one tailnet can stop without touching the others:
 	// the watcher and the forwarder both exit on its cancel. All the fallible
 	// setup is above, so a failed start never leaks a goroutine pair.
 	tctx, cancel := context.WithCancel(ctx)
-	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolve: resolve, resolved: rs, cancel: cancel, wg: &sync.WaitGroup{}}
+	tn := &Tailnet{conf: conf, ts: ts, tun: tun, dev: dev, lc: lc, suffix: suffix, stateDir: dir, resolved: rs, cancel: cancel, wg: &sync.WaitGroup{}}
+
+	// Peers and advertised services both resolve through this node; the suffix
+	// accessor lets a service FQDN be matched exactly once the suffix is known.
+	resolve := newTailnetResolver(lc, func() string { return tn.suffix })
+	tn.resolve = resolve
+	reg.registerResolver(conf.Name, resolve)
 
 	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, resolve, newPinger(lc))
 	tn.wg.Add(2) // forwarder + watcher: Close waits for both before the TUN fd drops
@@ -237,9 +240,9 @@ func newPinger(lc *local.Client) func(ctx context.Context, ip netip.Addr) (time.
 }
 
 // newTailnetResolver resolves an FQDN to a real tailnet IP using the tailnet's
-// own peer list. This deliberately avoids the system resolver (which we've
-// pointed at our own synthetic-IP responder).
-func newTailnetResolver(lc *local.Client) resolveFunc {
+// own peer status and advertised-service list. This deliberately avoids the
+// system resolver (which we've pointed at our own synthetic-IP responder).
+func newTailnetResolver(lc *local.Client, suffix func() string) resolveFunc {
 	match := func(p *ipnstate.PeerStatus, want string) (string, bool) {
 		if p == nil || len(p.TailscaleIPs) == 0 {
 			return "", false
@@ -261,6 +264,18 @@ func newTailnetResolver(lc *local.Client) resolveFunc {
 		for _, p := range st.Peer {
 			if ip, ok := match(p, want); ok {
 				return ip, true
+			}
+		}
+		// An advertised VIP service resolves to its own address; the forwarder
+		// dials that through the tailnet like any peer target.
+		svcs, err := lc.GetServices(ctx)
+		if err != nil {
+			return "", false
+		}
+		sfx := suffix()
+		for name, d := range svcs {
+			if serviceFQDN(name, sfx) == want && len(d.Addrs) > 0 {
+				return d.Addrs[0].String(), true
 			}
 		}
 		return "", false

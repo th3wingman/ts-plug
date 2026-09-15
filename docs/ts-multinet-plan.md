@@ -42,6 +42,7 @@ systemd restarts; daemon owns the config file but manual edits survive.
 | UX | short single-label domains (≤4 chars: dev, io, app…) warned at add, domain set, and start — they collide with public TLD space | `66041a4` |
 | UI | drill-down console: hash router, read-only Overview, per-tailnet detail (Peers filter/cap + click-only probing; Settings), Config page for globals + add; API additions `dns_registered` + `POST /config` (globals, comment-preserving, needs_restart) | `bd4d245`, `6627807` |
 | UI | structural **cidr/tun** endpoints (range/overlap + device-clash validation, works parked, applies via stop/start) wired into Settings; async TUN-retry nil-ctx panic fixed (found by the new tests) | `e718d69` |
+| Services | advertised `svc:<label>` VIP services as first-class selectable resources: discovery via `lc.GetServices`, service-aware resolver + `resolveSelections`, `GET /services`, `svc:` select validation naming the kind, hosts-block alias parity, `services` CLI verb + `--details status` breakdown, UI Services sub-tab | *this branch* |
 | Docs | plan status updates | `a837866` |
 | CLI | `--json` / `--details` flags on every command (raw replies, JSONL multi-peer, extended human forms); peers replies carry FQDN | `872c1c3` |
 | DNS hardening | routing domains set before the DNS server at registration; forwarder prefers real upstreams (`/run/systemd/resolve/resolv.conf`) over the resolved stub — no forwarding loop | `a593d09` |
@@ -121,12 +122,15 @@ Nothing — the CLI flags lane (`872c1c3`) and both DNS hardening pieces
    delete the `tsm-probe` device from the SkyNet console (bisect artifact);
    check corp's ACLs for the 42-of-1834 visibility; regular `tailscaled`
    restart whenever (stopped here for a clean system — coexists by design).
-3. **PR** from `ts-plug/multinet-host-mode` (git hard gate: ask the user
-   first; sample recent PR bodies first).
-4. **Web UI redesign** — ✅ implemented (`bd4d245`, `6627807`, `e718d69`);
+3. ✅ **PR open in the fork** from `ts-plug/multinet-host-mode` — fork-internal
+   only (`origin`, not `upstream`); head → the fork's default branch. Manual
+   verification pending.
+4. ✅ **Web UI redesign** implemented (`bd4d245`, `6627807`, `e718d69`) and
+   ✅ **advertised services** implemented (this branch, design record below);
    remaining: the on-host walkthrough with the user (Overview, drill-down,
-   probe-on-demand via journal, Settings saves, Config restart badges) and the
-   loopback `POST /config` + `cidr/tun` smoke; then PR.
+   probe-on-demand via journal, **Services** tab, Settings saves, Config
+   restart badges) and the loopback `POST /config` + `cidr/tun` smoke. One
+   reinstall covers both.
 
 ## Web UI redesign — implemented
 
@@ -186,6 +190,51 @@ page shows restart badges, zero probe traffic during polls (journal), corp's
 **Assumptions**: hash routing; sub-tabs in detail; click-to-probe; no
 virtualization/pagination/framework/auth changes; old dashboard inline editors
 removed; probe list stays 22,80,443,8080.
+
+## Advertised services (`svc:<label>`) — implemented
+
+Tailscale advertised services (`svc:<label>` Service VIPs) are first-class
+resources at parity with peer hosts, using the same config file, verbs and
+UI/CLI surface. Grounded on `client/local` (tailscale.com v1.102.3):
+`lc.GetServices(ctx) (map[tailcfg.ServiceName]tailcfg.ServiceDetails, error)`
+exists on the same `*local.Client` each tailnet already holds — no new
+dependency. `ServiceDetails{Name "svc:<label>", DisplayName, Addrs, Ports}`.
+
+**Behaviour**
+
+- Selected services live in the existing per-tailnet `resources` list as
+  `svc:<label>` — same verbs, same comment-preserving config file.
+- Discovery via `lc.GetServices`; the tailnet resolver (`newTailnetResolver`)
+  checks peers then services, so `<label>.<suffix>` and `<label>.<domain>` map
+  to one synthetic IP keyed on the canonical service FQDN (peers and services
+  share the allocator, never the same key). Alias misses still fall through to
+  the public upstream; MagicDNS-suffix misses stay authoritative NXDOMAIN.
+- Forwarding unchanged: the forwarder dials the resolved target through
+  `ts.Dial` with the client's port (TCP/UDP); ICMP to a service's synthetic IP
+  answers unreachable via the existing TSMP ping path.
+- Selected services land in the `/etc/hosts` block under both spellings, like
+  peers (`resourceAlias` strips the `svc:` prefix for the alias).
+- No port probing for services: advertised `Ports` are displayed as metadata.
+- `GET /services` (per tailnet: `svc:` name, display name, VIPs, advertised
+  ports, selected flag). `/peers` untouched. `select`/`forget` accept `svc:`
+  names; `select` validates against the live service list and the error text
+  names the kind. `forget` accepts any name (stale cleanup).
+- CLI: `ts-multinet services [tailnet]` (`--json` / `--details`),
+  `select`/`forget` accept `svc:<label>`, `--details status` carries an
+  advertised/selected services count.
+- UI: third sub-tab **Peers | Services | Settings**; Services table (name,
+  display name, VIPs, advertised ports, selection checkbox), filter box, empty
+  state explaining ACL-gated visibility, no probe button.
+
+**Identity**: a service's `svc:<label>` name is its identity — services are not
+node-key-pinned, so a vanished service surfaces like a missing peer, loudly.
+`allow_all` still means every non-Mullvad **peer**; service selection is
+per-service checkboxes.
+
+**Assumptions**: any advertised port is forwardable (tailnet ACLs enforce);
+services support TCP+UDP, ICMP unreachable; VIPs come from the tailnet address
+space and route via `ts.Dial`/netstack; no new dependencies, no `/peers`
+change, no auth change.
 
 ## Backlog (not in scope of this plan)
 

@@ -54,12 +54,14 @@ export const hostnameOf = (tc) => tc.hostname || "ts-multinet-" + slug(tc.name);
 export const state = {
   status: [], // GET /status
   peers: [], // GET /peers (no ports: probing is click-only)
+  services: [], // GET /services (advertised VIP services; never probed)
   config: null, // GET /config
   msgs: {}, // tailnet -> {kind, text, link?, transient?}
   pageMsg: null, // {kind, text} config-page / add-tailnet feedback
   peerErr: {}, // tailnet -> last select/forget error
   probed: {}, // tailnet -> {peerName: [ports]} — click-to-probe results
   peerFilter: {}, // tailnet -> filter text
+  svcFilter: {}, // tailnet -> services filter text
   showAll: {}, // tailnet -> bool (reveal beyond PEER_CAP)
 };
 
@@ -86,13 +88,15 @@ export function errMsg(tailnet, text) {
 
 export async function refresh() {
   try {
-    const [status, peers, config] = await Promise.all([
+    const [status, peers, services, config] = await Promise.all([
       get("/status"),
       get("/peers"), // never ports= here — probing is on demand
+      get("/services"),
       get("/config"),
     ]);
     state.status = status || [];
     state.peers = peers || [];
+    state.services = services || [];
     state.config = config;
     // transient messages (login flow) go stale once the tailnet is Running;
     // warnings and errors stay until the next action replaces them
