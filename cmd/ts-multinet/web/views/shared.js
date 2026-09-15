@@ -349,29 +349,55 @@ export async function setEnabled(name, on) {
   refresh();
 }
 
-// Peer-table column visibility is a browser view preference — localStorage,
-// not daemon state: each browser picks its own.
-const PEERS_COLS_KEY = "tsm.peersCols";
-const PEERS_COLS_DEFAULT = { name: true, fqdn: false, ip: true, os: true, state: true, services: true }; // fqdn off: it is <name>.<suffix>, and the name column already shows the short form
-export function peerCols() {
+// Table column visibility is a browser view preference — localStorage, not
+// daemon state: each browser picks its own. One store per table.
+const readCols = (key, defaults) => {
   try {
-    const saved = JSON.parse(localStorage.getItem(PEERS_COLS_KEY) || "null");
+    const saved = JSON.parse(localStorage.getItem(key) || "null");
     if (saved && typeof saved === "object") {
-      return { ...PEERS_COLS_DEFAULT, ...saved };
+      return { ...defaults, ...saved };
     }
   } catch {
     /* unreadable: fall back to defaults */
   }
-  return { ...PEERS_COLS_DEFAULT };
-}
-export function setPeerCol(col, on) {
-  const cols = peerCols();
+  return { ...defaults };
+};
+const writeCols = (key, defaults, col, on) => {
+  const cols = readCols(key, defaults);
   cols[col] = on;
   try {
-    localStorage.setItem(PEERS_COLS_KEY, JSON.stringify(cols));
+    localStorage.setItem(key, JSON.stringify(cols));
   } catch {
     /* private mode: the preference just won't persist */
   }
+};
+
+// peers: fqdn off by default — it is <name>.<suffix>, and the name column
+// already shows the short form
+const PEERS_COLS_KEY = "tsm.peersCols";
+const PEERS_COLS_DEFAULT = {
+  name: true,
+  fqdn: false,
+  ip: true,
+  os: true,
+  state: true,
+  services: true,
+};
+export function peerCols() {
+  return readCols(PEERS_COLS_KEY, PEERS_COLS_DEFAULT);
+}
+export function setPeerCol(col, on) {
+  writeCols(PEERS_COLS_KEY, PEERS_COLS_DEFAULT, col, on);
+}
+
+// services: all columns on by default
+const SVC_COLS_KEY = "tsm.svcCols";
+const SVC_COLS_DEFAULT = { name: true, display: true, vip: true, ports: true };
+export function svcCols() {
+  return readCols(SVC_COLS_KEY, SVC_COLS_DEFAULT);
+}
+export function setSvcCol(col, on) {
+  writeCols(SVC_COLS_KEY, SVC_COLS_DEFAULT, col, on);
 }
 
 // probePeers fetches one tailnet's peers WITH the port list — the only path

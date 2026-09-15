@@ -34,6 +34,8 @@ import {
   setEnabled,
   peerCols,
   setPeerCol,
+  svcCols,
+  setSvcCol,
   probePeers,
   removeTailnet,
 } from "./shared.js";
@@ -50,6 +52,14 @@ const PEER_COLS = [
   ["os", "os"],
   ["state", "state"],
   ["services", "services"],
+];
+
+// services-table columns, same mechanism (svcCols in shared.js).
+const SVC_COLS = [
+  ["name", "name"],
+  ["display", "display"],
+  ["vip", "vip"],
+  ["ports", "ports"],
 ];
 
 export function renderTailnet(root, name, tab) {
@@ -195,8 +205,7 @@ function renderPeers(root, name, s, tc) {
         h("td", {}, box),
       );
       if (cols.name) row.append(h("td", {}, p.name || "(unnamed)"));
-      if (cols.fqdn)
-        row.append(h("td", { class: "col-fqdn" }, p.fqdn || "—"));
+      if (cols.fqdn) row.append(h("td", { class: "col-fqdn" }, p.fqdn || "—"));
       if (cols.ip) row.append(h("td", {}, p.ip || "—"));
       if (cols.os) row.append(h("td", {}, p.os || ""));
       if (cols.state) row.append(h("td", {}, p.online ? "up" : "down"));
@@ -374,6 +383,7 @@ function renderServices(root, name, s, tc) {
   const selected = new Set(tc.resources || []);
   const tbody = h("tbody");
   const count = h("span", { class: "hint" });
+  const theadRow = h("tr", {}); // rebuilt per render — column visibility can change
 
   const filter = state.svcFilter[name] || "";
   const matches = (svc) =>
@@ -382,6 +392,14 @@ function renderServices(root, name, s, tc) {
     (svc.display_name || "").toLowerCase().includes(filter);
 
   const renderRows = () => {
+    const cols = svcCols();
+    const span = 1 + SVC_COLS.filter(([k]) => cols[k]).length;
+    theadRow.replaceChildren(
+      h("th", {}),
+      ...SVC_COLS.filter(([k]) => cols[k]).map(([, label]) =>
+        h("th", {}, label),
+      ),
+    );
     tbody.replaceChildren();
     const hit = services.filter(matches);
 
@@ -399,17 +417,15 @@ function renderServices(root, name, s, tc) {
             ...(selected.has(svc.name) ? { checked: true } : {}),
             onchange: (e) => togglePeer(name, svc.name, e.target.checked),
           });
-      tbody.append(
-        h(
-          "tr",
-          {},
-          h("td", {}, box),
-          h("td", {}, svc.name || "(unnamed)"),
-          h("td", {}, svc.display_name || "—"),
-          h("td", {}, (svc.vips || []).join(", ") || "—"),
-          h("td", {}, (svc.ports || []).join(" ") || "—"),
-        ),
-      );
+      const row = h("tr", {}, h("td", {}, box));
+      if (cols.name) row.append(h("td", {}, svc.name || "(unnamed)"));
+      if (cols.display)
+        row.append(h("td", {}, svc.display_name || "—"));
+      if (cols.vip)
+        row.append(h("td", {}, (svc.vips || []).join(", ") || "—"));
+      if (cols.ports)
+        row.append(h("td", {}, (svc.ports || []).join(" ") || "—"));
+      tbody.append(row);
     }
 
     if (!hit.length) {
@@ -419,7 +435,7 @@ function renderServices(root, name, s, tc) {
           : "no advertised services visible — service visibility is ACL-gated on the tailnet"
         : "services unavailable";
       tbody.append(
-        h("tr", {}, h("td", { colspan: "5", class: "empty" }, note)),
+        h("tr", {}, h("td", { colspan: "" + span, class: "empty" }, note)),
       );
     }
     const sel = services.filter((x) => selected.has(x.name)).length;
@@ -443,6 +459,30 @@ function renderServices(root, name, s, tc) {
       "div",
       { class: "toolbar" },
       search,
+      h(
+        "details",
+        { class: "cols" },
+        h("summary", { class: "btn btn--small" }, "columns"),
+        h(
+          "div",
+          { class: "cols__menu" },
+          ...SVC_COLS.map(([k, label]) =>
+            h(
+              "label",
+              { class: "switch" },
+              h("input", {
+                type: "checkbox",
+                ...(svcCols()[k] ? { checked: true } : {}),
+                onchange: (e) => {
+                  setSvcCol(k, e.target.checked);
+                  renderRows(); // rows + header only — the menu stays open
+                },
+              }),
+              " " + label,
+            ),
+          ),
+        ),
+      ),
       h(
         "button",
         {
