@@ -35,6 +35,7 @@ func patchConfigFile(path string, prev, next *Config) error {
 	if !ok {
 		return fmt.Errorf("parse %s: not a JSON object", path)
 	}
+	patchGlobals(root, prev, next)
 	arr, err := tailnetsArray(root)
 	if err != nil {
 		return err
@@ -118,6 +119,61 @@ func patchConfigFile(path string, prev, next *Config) error {
 		return fmt.Errorf("patched config does not match the intended change")
 	}
 	return atomicWrite(path, out)
+}
+
+// patchGlobals writes the daemon-wide members (mtu, listeners, upstream, hosts
+// file, state dir) that changed between prev and next. A cleared value removes
+// the member — the code's defaults take over. configsEqual compares these too,
+// so an unpatched global would fail the round-trip check below.
+func patchGlobals(root *hujson.Object, prev, next *Config) {
+	if prev.MTU != next.MTU {
+		if next.MTU == 0 {
+			removeMember(root, "mtu")
+		} else {
+			setGlobal(root, "mtu", hujson.Int(int64(next.MTU)))
+		}
+	}
+	for _, g := range [...]struct{ name, was, now string }{
+		{"dns_listen", prev.DNSListen, next.DNSListen},
+		{"upstream_dns", prev.UpstreamDNS, next.UpstreamDNS},
+		{"ui_listen", prev.UIListen, next.UIListen},
+		{"hosts_file", prev.HostsFile, next.HostsFile},
+		{"state_dir", prev.StateDir, next.StateDir},
+	} {
+		if g.was == g.now {
+			continue
+		}
+		if g.now == "" {
+			removeMember(root, g.name)
+			continue
+		}
+		setGlobal(root, g.name, hujson.String(g.now))
+	}
+}
+
+// setGlobal replaces a root member's value, or inserts it above the tailnets
+// array when new — globals read above the list of tailnets.
+func setGlobal(root *hujson.Object, name string, val hujson.ValueTrimmed) {
+	for i := range root.Members {
+		if nameOf(root.Members[i]) == name {
+			root.Members[i].Value.Value = val
+			return
+		}
+	}
+	idx := len(root.Members)
+	for i := range root.Members {
+		if nameOf(root.Members[i]) == "tailnets" {
+			idx = i
+			break
+		}
+	}
+	m := hujson.ObjectMember{
+		Name:  hujson.Value{BeforeExtra: hujson.Extra("\n  "), Value: hujson.String(name)},
+		Value: hujson.Value{BeforeExtra: hujson.Extra(" "), Value: val},
+	}
+	root.Members = append(root.Members, hujson.ObjectMember{})
+	copy(root.Members[idx+1:], root.Members[idx:])
+	root.Members[idx] = m
 }
 
 // configsEqual compares the fields that round-trip through the config file;

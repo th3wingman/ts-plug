@@ -489,6 +489,11 @@ type tailnetStatusJSON struct {
 	Selected   int    `json:"selected"` // selections currently in the hosts block
 	Peers      int    `json:"peers"`
 	Up         int    `json:"up"`
+
+	// DNSRegistered is true when this tailnet's systemd-resolved routing
+	// domains are applied (host DNS reaches our responder). Always false in
+	// containers: resolv.conf is ours there.
+	DNSRegistered bool `json:"dns_registered"`
 }
 
 type checkJSON struct {
@@ -518,6 +523,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("GET /peers", d.handlePeers)
 	mux.HandleFunc("GET /check", d.handleCheck)
 	mux.HandleFunc("GET /config", d.handleConfig)
+	mux.HandleFunc("POST /config", d.handleUpdateConfig)
 	mux.HandleFunc("POST /login", d.handleLogin)
 	mux.HandleFunc("POST /reload", d.handleReload)
 	mux.HandleFunc("POST /tailnet/{name}/select", d.handleSelect)
@@ -565,14 +571,18 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for _, tn := range d.tailnets {
 		state, loginURL := tn.status()
 		ts := tailnetStatusJSON{Name: tn.conf.Name, Suffix: tn.suffix, CIDR: tn.conf.CIDR, Hostname: tn.conf.nodeHostname(), AssignedIP: tn.assignedIP, State: state, LoginURL: loginURL, Selected: tn.selectedCount()}
-		if st, err := tn.lc.Status(r.Context()); err == nil {
-			for _, p := range st.Peer {
-				if isMullvad(p.DNSName) {
-					continue // shared transit, not resources — same filter as `peers`
-				}
-				ts.Peers++
-				if p.Online {
-					ts.Up++
+		ts.DNSRegistered = tn.resolved.isRegistered(tn.dev)
+		// lc is nil only in tests: stubbed tailnets have no tsnet client.
+		if tn.lc != nil {
+			if st, err := tn.lc.Status(r.Context()); err == nil {
+				for _, p := range st.Peer {
+					if isMullvad(p.DNSName) {
+						continue // shared transit, not resources — same filter as `peers`
+					}
+					ts.Peers++
+					if p.Online {
+						ts.Up++
+					}
 				}
 			}
 		}
@@ -789,6 +799,131 @@ func (d *Daemon) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, cfg)
+}
+
+// minMTU/maxMTU keep mtu edits inside what the datapath can actually carry:
+// WireGuard needs at least 1280, and 9000 is the practical ceiling.
+const (
+	minMTU = 1280
+	maxMTU = 9000
+)
+
+// globalsReq is the POST /config body: the daemon-wide settings only. Every
+// field is optional and pointer-typed so "absent" (untouched) is distinct
+// from "present but empty" (clear the override, fall back to the default).
+// state_dir is accepted only so it can be rejected loudly.
+type globalsReq struct {
+	MTU         *int    `json:"mtu"`
+	DNSListen   *string `json:"dns_listen"`
+	UpstreamDNS *string `json:"upstream_dns"`
+	UIListen    *string `json:"ui_listen"`
+	HostsFile   *string `json:"hosts_file"`
+	StateDir    *string `json:"state_dir"`
+}
+
+// handleUpdateConfig sets the daemon-wide globals. The config file stays the
+// source of truth (patched comment-preserving); these fields only take effect
+// at the next service restart, so the reply names the ones that changed in
+// needs_restart for the UI to badge.
+func (d *Daemon) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var req globalsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.StateDir != nil {
+		writeErr(w, http.StatusBadRequest, "state_dir is manual-only — moving it orphans node state; edit the config file directly and restart")
+		return
+	}
+	if req.MTU != nil && *req.MTU != 0 && (*req.MTU < minMTU || *req.MTU > maxMTU) {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("mtu must be %d..%d (0 resets to the default)", minMTU, maxMTU))
+		return
+	}
+	if req.DNSListen != nil && *req.DNSListen != "" && !validListenAddr(*req.DNSListen) {
+		writeErr(w, http.StatusBadRequest, "dns_listen must be host:port")
+		return
+	}
+	if req.UIListen != nil && *req.UIListen != "" && !validListenAddr(*req.UIListen) {
+		writeErr(w, http.StatusBadRequest, "ui_listen must be host:port")
+		return
+	}
+	if req.UpstreamDNS != nil && *req.UpstreamDNS != "" && !validUpstreamDNS(*req.UpstreamDNS) {
+		writeErr(w, http.StatusBadRequest, "upstream_dns must be an IP or host:port")
+		return
+	}
+	if req.HostsFile != nil && *req.HostsFile != "" && !filepath.IsAbs(*req.HostsFile) {
+		writeErr(w, http.StatusBadRequest, "hosts_file must be an absolute path")
+		return
+	}
+
+	// changed is the request-order list of globals that actually moved (the
+	// config-file diff uses the same six fields for its restart notice).
+	var changed []string
+	notice, err := d.applyConfigUpdate(func(c *Config) error {
+		if setInt(&c.MTU, req.MTU) {
+			changed = append(changed, "mtu")
+		}
+		if setStr(&c.DNSListen, req.DNSListen) {
+			changed = append(changed, "dns_listen")
+		}
+		if setStr(&c.UpstreamDNS, req.UpstreamDNS) {
+			changed = append(changed, "upstream_dns")
+		}
+		if setStr(&c.UIListen, req.UIListen) {
+			changed = append(changed, "ui_listen")
+		}
+		if setStr(&c.HostsFile, req.HostsFile) {
+			changed = append(changed, "hosts_file")
+		}
+		return nil
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok := "config updated"
+	if notice != "" {
+		ok += "; " + notice
+	}
+	writeJSON(w, map[string]string{"ok": ok, "needs_restart": strings.Join(changed, ", ")})
+}
+
+// setInt applies an optional numeric global, reporting whether it changed.
+func setInt(dst *int, v *int) bool {
+	if v == nil || *dst == *v {
+		return false
+	}
+	*dst = *v
+	return true
+}
+
+// setStr applies an optional string global, reporting whether it changed.
+func setStr(dst *string, v *string) bool {
+	if v == nil || *dst == *v {
+		return false
+	}
+	*dst = *v
+	return true
+}
+
+// validListenAddr accepts host:port. An empty host is rejected — 0.0.0.0 is
+// the explicit way to bind every interface.
+func validListenAddr(s string) bool {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || host == "" {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n > 0 && n < 65536
+}
+
+// validUpstreamDNS accepts a bare IP or host:port; the daemon's ensurePort
+// adds the default DNS port for the bare form at startup.
+func validUpstreamDNS(s string) bool {
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	return validListenAddr(s)
 }
 
 // selectionReq is the shared body of the mutation endpoints (each uses the

@@ -104,6 +104,18 @@ func (s *resolvedSync) revertAll() {
 	}
 }
 
+// isRegistered reports whether dev's routing domains are currently applied.
+// Nil-safe: tests and containers run without a resolvedSync (always false).
+func (s *resolvedSync) isRegistered(dev string) bool {
+	if s == nil || dev == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.registered[dev]
+	return ok
+}
+
 // revert returns one interface to its pre-daemon DNS config — the per-TUN
 // counterpart of revertAll, used when a single tailnet stops at runtime.
 func (s *resolvedSync) revert(dev string) {
