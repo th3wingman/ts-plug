@@ -1,8 +1,8 @@
 // Config patching: the daemon owns the config file, but humans edit it too,
 // so mutations go through the hujson AST — comments and manual formatting
 // survive every write. The only mutable keys are the per-tailnet domain,
-// allow_all, and resources; tailnet structure (name/cidr/tun) is static and
-// still requires a daemon restart.
+// allow_all, native_dns, and resources; tailnet structure (name/cidr/tun) is
+// static and still requires a daemon restart.
 
 package main
 
@@ -91,6 +91,13 @@ func patchConfigFile(path string, prev, next *Config) error {
 					removeMember(obj, "allow_all")
 				} else {
 					setMember(obj, "allow_all", hujson.Bool(true))
+				}
+			}
+			if o.NativeDNS != n.NativeDNS {
+				if !n.NativeDNS {
+					removeMember(obj, "native_dns")
+				} else {
+					setMember(obj, "native_dns", hujson.Bool(true))
 				}
 			}
 			if !slices.Equal(o.Resources, n.Resources) {

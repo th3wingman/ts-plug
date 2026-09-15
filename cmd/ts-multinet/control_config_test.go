@@ -185,6 +185,27 @@ func TestAllowAllToggle(t *testing.T) {
 	}
 }
 
+// native_dns is hosts-block-only: it changes what shells complete against,
+// never DNS resolution (the responder answers both spellings regardless).
+func TestNativeDNSToggle(t *testing.T) {
+	d, cfgPath := stubDaemon(t)
+	if rec := doReq(t, d, "POST", "/tailnet/dev/native-dns", `{"on":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("native-dns on: %d %s", rec.Code, rec.Body.String())
+	}
+	if !devConf(t, cfgPath).NativeDNS {
+		t.Fatal("native_dns not set")
+	}
+	if rec := doReq(t, d, "POST", "/tailnet/dev/native-dns", `{"on":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("native-dns off: %d %s", rec.Code, rec.Body.String())
+	}
+	if devConf(t, cfgPath).NativeDNS {
+		t.Fatal("native_dns not cleared")
+	}
+	if rec := doReq(t, d, "POST", "/tailnet/dev/native-dns", `{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing on: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDomainSetValidateAndClear(t *testing.T) {
 	d, cfgPath := stubDaemon(t)
 	if rec := doReq(t, d, "POST", "/tailnet/dev/domain", `{"domain":"lab.corp"}`); rec.Code != http.StatusOK {

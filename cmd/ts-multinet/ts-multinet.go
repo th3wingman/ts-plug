@@ -39,15 +39,16 @@ type Config struct {
 }
 
 type TailnetConf struct {
-	Name      string   `json:"name"`                // short id, used for state dir
-	Suffix    string   `json:"suffix"`              // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
-	Domain    string   `json:"domain,omitempty"`    // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
-	CIDR      string   `json:"cidr"`                // synthetic range, e.g. "198.18.1.0/24"
-	TUN       string   `json:"tun"`                 // TUN device name (<=15 chars)
-	Hostname  string   `json:"hostname,omitempty"`  // node name in the tailnet; default "ts-multinet-<name>"
-	Enabled   *bool    `json:"enabled,omitempty"`   // default true
-	AllowAll  bool     `json:"allow_all,omitempty"` // select every non-Mullvad peer instead of listing resources
-	Resources []string `json:"resources,omitempty"` // short names to select (hosts entries + synthetic IPs)
+	Name      string   `json:"name"`                 // short id, used for state dir
+	Suffix    string   `json:"suffix"`               // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
+	Domain    string   `json:"domain,omitempty"`     // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
+	CIDR      string   `json:"cidr"`                 // synthetic range, e.g. "198.18.1.0/24"
+	TUN       string   `json:"tun"`                  // TUN device name (<=15 chars)
+	Hostname  string   `json:"hostname,omitempty"`   // node name in the tailnet; default "ts-multinet-<name>"
+	Enabled   *bool    `json:"enabled,omitempty"`    // default true
+	AllowAll  bool     `json:"allow_all,omitempty"`  // select every non-Mullvad peer instead of listing resources
+	Resources []string `json:"resources,omitempty"`  // short names to select (hosts entries + synthetic IPs)
+	NativeDNS bool     `json:"native_dns,omitempty"` // also list the native MagicDNS name in the hosts block (completion); DNS resolution is unaffected
 	StateDir  string   `json:"state_dir,omitempty"`
 }
 

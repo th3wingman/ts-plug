@@ -45,6 +45,8 @@ systemd restarts; daemon owns the config file but manual edits survive.
 | Services | advertised `svc:<label>` VIP services as first-class selectable resources: discovery via `lc.GetServices`, service-aware resolver + `resolveSelections`, `GET /services`, `svc:` select validation naming the kind, hosts-block alias parity, `services` CLI verb + `--details status` breakdown, UI Services sub-tab | *this branch* |
 | UI polish | config-drift indicator (`GET /applied` + topbar applied/dirty), `POST /tailnet/{name}/clear`, overview summary line + services count, detail breadcrumb, Peers **hide inactive**, **clear all** on Peers/Services | *this branch* |
 | Resilience | self-heal watchdog restarts a tailnet left dark by a network outage (~90s without a control-plane poll, or a dead datapath), `POST /tailnet/{name}/restart` + CLI `restart` + UI button, forwarder pumps surface fatal errors instead of living on half-dead, resolved per-link config re-applied every 60s (survives a systemd-resolved restart) | *this branch* |
+| Watchdog datapath probe | `Self.Online` (control-plane) alone no longer reads healthy — TSMP pong from up to two online peers required, so an open map poll with dead peer paths still triggers the restart | *this branch* |
+| Native-DNS completion toggle | per-tailnet `native_dns` (default off): the /etc/hosts line lists the friendly alias only, so shell completion is deterministic; on adds the MagicDNS name. Settings checkbox + `POST /tailnet/{name}/native-dns` + `restart`-style CLI untouched; DNS resolves both spellings regardless | *this branch* |
 | Docs | plan status updates | `a837866` |
 | CLI | `--json` / `--details` flags on every command (raw replies, JSONL multi-peer, extended human forms); peers replies carry FQDN | `872c1c3` |
 | DNS hardening | routing domains set before the DNS server at registration; forwarder prefers real upstreams (`/run/systemd/resolve/resolv.conf`) over the resolved stub — no forwarding loop | `a593d09` |
@@ -237,6 +239,82 @@ per-service checkboxes.
 services support TCP+UDP, ICMP unreachable; VIPs come from the tailnet address
 space and route via `ts.Dial`/netstack; no new dependencies, no `/peers`
 change, no auth change.
+
+## Session state — native-DNS hosts toggle (LANDED)
+
+Written 2026-09-15 so a fresh context could resume mid-flight; all items
+shipped since. Branch `ts-plug/multinet-host-mode`; PR #10 in the fork.
+
+**Request**: shell completion for `agent-vanta-multi.` offers two names —
+`agent-vanta-multi.skynet` and `agent-vanta-multi.tail95e9d1.ts.net` — because
+the managed `/etc/hosts` block writes both spellings per line, and completion
+reads `/etc/hosts`. Want a **checkbox next to the tailXXXX.ts.net suffix** on
+the tailnet Settings tab, **off by default**, so completion is deterministic
+(`<host>.<domain>` only). Same short name on two tailnets already
+disambiguates by domain — nothing more needed there.
+
+**HARD CONSTRAINT (user correction mid-flight)**: the DNS service is untouched.
+`dig agent-vanta-multi.skynet +noall +answer agent-vanta-multi.tail95e9d1.ts.net +noall +answer`
+must keep returning both answers (A, and CNAME→A for the native name). So the
+resolved routing domains (`~suffix ~domain`) stay registered for BOTH always;
+the toggle governs **only the `/etc/hosts` line**. `dig` bypasses nsswitch so
+it never sees the hosts block; `ping host.tailXXXX.ts.net` still resolves via
+resolved→responder even with the FQDN absent from hosts (files→dns
+fall-through).
+
+**Settled design**: `native_dns` (per-tailnet bool, default **false**) controls
+only whether `hostsLine` appends the canonical FQDN. On → completion offers
+both spellings; off → one.
+
+**In the tree now (committed)**
+
+- `ts-multinet.go`: `TailnetConf.NativeDNS bool` (`native_dns,omitempty`).
+- `hosts.go`: `hostsEntry.Native`; `hostsLine` = `IP alias [fqdn] # ts-multinet (name)`.
+- `control.go`: `applySelections` sets `Native: conf.NativeDNS`;
+  `handleNativeDNS` → `POST /tailnet/{name}/native-dns`, body `{"on":bool}`
+  (wording already says hosts-block-only); route registered.
+- `resolved.go` + `tailnet.go`: **reverted to HEAD** — `register` is back to
+  3 args `(dev, suffix, domain)`, both routing domains always, 60s re-apply and
+  the `resolvectlFn` test hook kept. Do NOT re-add a 4th param.
+- `needsRestart` lost its unused `online` param (signature, `checkHealth` call
+  site, and `TestNeedsRestart` all updated).
+
+**Watchdog hardening (uncommitted, same tree)**: `checkHealth` no longer treats
+`Self.Online` (control-plane only) as sufficient — `datapathOK` TSMP-pings up
+to two peers control reports online (`probeTargets`, lowest IPs first so the
+pair is stable across ticks; `healthProbeTimeout` 3s, longer than the TCP
+`probeTimeout` because DERP-relayed pongs take seconds). Both failing →
+tailnet reads offline → in-place restart after the usual 90s window. No
+probeable peer = vacuously true. Deviation from the reviewer's "one selected
+peer": any online peer proves OUR datapath, the selection set may be empty,
+and short-name→IP mapping at health time is heavier — the 2-try hedge plus the
+5-minute restart cooldown bound false positives. Test: `TestProbeTargets`.
+Committed together with the native_dns toggle (one commit, shared
+`control.go`), per the user's call; the host binary is 47e7bff — reinstall
+(`sudo ./scripts/install-ts-multinet.sh`) to pick up the datapath probe and
+the toggle.
+
+**Shipped**: all four — hosts tests (`TestHostsLineNativeDNS`,
+`TestNativeDNSToggle`), the Settings checkbox beside the suffix
+(`setNativeDNS` in `shared.js`, row in `tailnet.js`), example-config + README
+notes, and the hujson patcher learned `native_dns` (first attempt silently
+dropped the field — `configpatch.go` only knew domain/hostname/allow_all/
+resources; the POST returned 200 but the file never changed).
+
+**Gotchas**
+
+- An editor auto-save clobbered in-flight edits twice this session
+  (`tailnet.go`, `tailnet.js` reported applied but absent on disk) — verify
+  every edit with grep + `go build` before moving on.
+- Stale LSP blockers (`forwarderDead undefined`, `runRestartClient undefined`)
+  cleared by touching the files and re-probing `lens_diagnostics source=lsp`;
+  `go build` is authoritative.
+- Restart of a parked tailnet returns 409; `reload` is the parked path.
+
+**Session commits already pushed**: `30ad378` advertised `svc:` services ·
+`c953218` UI polish (drift indicator, clear-all, hide-inactive, breadcrumb) ·
+`47e7bff` outage self-heal (watchdog, restart verb/endpoint/UI button,
+forwarder pump errors surfaced, resolved 60s re-apply).
 
 ## Backlog (not in scope of this plan)
 

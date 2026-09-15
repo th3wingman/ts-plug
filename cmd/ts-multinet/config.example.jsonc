@@ -50,6 +50,10 @@
     //   //                              // (shared Mullvad exit nodes are never selectable)
     //   // "resources": ["host1", "host2"],  // short names exactly as `peers` shows them;
     //   //                                   // usually managed via `select`/`forget` or the web UI
+    //   // "native_dns": true,           // also list the native MagicDNS name (host.<suffix>)
+    //   //                               // on the /etc/hosts line, so shell completion
+    //   //                               // offers both spellings; DNS resolves either
+    //   //                               // way; default false
     // },
   ]
 }

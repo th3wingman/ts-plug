@@ -213,6 +213,13 @@ Two fallbacks keep it non-fatal:
 Every selected resource still gets its `/etc/hosts` line too — the two paths
 always agree, pointing at the same synthetic IP.
 
+That hosts line lists one spelling per host by default — the friendly alias —
+so shell hostname completion offers a single deterministic name (the same
+short name in two tailnets still disambiguates by domain). The per-tailnet
+`"native_dns"` option (Settings-tab checkbox, or the config) adds the full
+MagicDNS name to the line; DNS resolves both spellings regardless, this only
+changes what completion offers.
+
 ## Install
 
 One command from a clone — builds, installs the binary + config + systemd

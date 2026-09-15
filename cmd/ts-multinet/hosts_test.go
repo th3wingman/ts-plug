@@ -101,3 +101,18 @@ func TestWriteHostsBlockAppendsWhenNoMarkers(t *testing.T) {
 		t.Errorf("appended entry missing:\n%s", got)
 	}
 }
+
+// The native MagicDNS name is opt-in per tailnet (native_dns): off keeps
+// hostname completion deterministic — one spelling per host, since the hosts
+// block is what shells complete from. DNS resolution is unaffected either way;
+// the responder answers both spellings regardless.
+func TestHostsLineNativeDNS(t *testing.T) {
+	e := hostsEntry{IP: "198.18.1.5", Alias: "a.skynet", FQDN: "a.tail.ts.net", Tailnet: "skynet"}
+	if line := hostsLine(e); strings.Contains(line, "a.tail.ts.net") {
+		t.Errorf("native off: FQDN must stay off the line: %q", line)
+	}
+	e.Native = true
+	if line := hostsLine(e); !strings.Contains(line, "a.tail.ts.net") {
+		t.Errorf("native on: FQDN missing from line: %q", line)
+	}
+}

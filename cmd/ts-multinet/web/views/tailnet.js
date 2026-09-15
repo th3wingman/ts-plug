@@ -29,6 +29,7 @@ import {
   forgetPeer,
   clearSelections,
   restartTailnet,
+  setNativeDNS,
   probePeers,
   removeTailnet,
 } from "./shared.js";
@@ -507,7 +508,30 @@ function renderSettings(root, name, s, tc) {
         note: "node name in the tailnet; applying it restarts this tailnet — no re-login",
       },
     ),
-    infoRow("suffix", s?.suffix || "(detected when Running)"),
+    h(
+      "div",
+      { class: "field" },
+      h("span", { class: "field__label" }, "suffix"),
+      h(
+        "div",
+        { class: "field__control" },
+        h(
+          "span",
+          { class: "field__value" },
+          s?.suffix || "(detected when Running)",
+        ),
+        h(
+          "label",
+          { class: "switch" },
+          h("input", {
+            type: "checkbox",
+            ...(tc.native_dns ? { checked: true } : {}),
+            onchange: (e) => setNativeDNS(name, e.target.checked),
+          }),
+          " native MagicDNS name in hosts block",
+        ),
+      ),
+    ),
     infoRow("node ip", s?.assigned_ip),
   );
 

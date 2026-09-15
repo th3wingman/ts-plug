@@ -297,6 +297,24 @@ export async function restartTailnet(name) {
   refresh();
 }
 
+// setNativeDNS toggles whether the tailnet's native MagicDNS name is also
+// listed in the /etc/hosts block (what shell hostname completion reads).
+// DNS resolution is unaffected — both spellings resolve either way.
+export async function setNativeDNS(name, on) {
+  try {
+    await post(`/tailnet/${encodeURIComponent(name)}/native-dns`, { on });
+    msg(name, {
+      kind: "ok",
+      text: on
+        ? "native MagicDNS name in the hosts block — completion offers both spellings"
+        : "friendly name only — completion offers <host>.<domain>",
+    });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
 // probePeers fetches one tailnet's peers WITH the port list — the only path
 // that probes; results are cached per peer name until the next probe.
 export async function probePeers(name) {

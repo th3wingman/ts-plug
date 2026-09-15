@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,9 +36,10 @@ const probeTimeout = 1500 * time.Millisecond
 // unhealthyAfter, or with a dead forwarder, is restarted in place;
 // restartCooldown keeps a long outage from thrashing it.
 const (
-	healthTick      = 30 * time.Second
-	unhealthyAfter  = 90 * time.Second
-	restartCooldown = 5 * time.Minute
+	healthTick         = 30 * time.Second
+	unhealthyAfter     = 90 * time.Second
+	restartCooldown    = 5 * time.Minute
+	healthProbeTimeout = 3 * time.Second // TSMP pong; longer than the TCP probeTimeout — DERP-relayed pongs take seconds
 )
 
 // tailnetHealth is the watchdog's per-tailnet memory: when it was last online,
@@ -52,7 +54,7 @@ type tailnetHealth struct {
 // needsRestart decides whether a tailnet's health warrants an in-place restart.
 // A dead forwarder qualifies immediately (cooldown permitting); a node that was
 // online before but has not been seen online for unhealthyAfter also qualifies.
-func needsRestart(h *tailnetHealth, online, forwarderDead bool, now time.Time) bool {
+func needsRestart(h *tailnetHealth, forwarderDead bool, now time.Time) bool {
 	if h == nil || now.Sub(h.lastRestart) < restartCooldown {
 		return false
 	}
@@ -393,6 +395,7 @@ func (d *Daemon) applySelections() {
 				Alias:   resourceAlias(r.Short, conf.domainName()),
 				FQDN:    r.FQDN,
 				Tailnet: conf.Name,
+				Native:  conf.NativeDNS,
 			})
 			applied++
 		}
@@ -602,6 +605,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/select", d.handleSelect)
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
+	mux.HandleFunc("POST /tailnet/{name}/native-dns", d.handleNativeDNS)
 	mux.HandleFunc("POST /tailnet/{name}/clear", d.handleClear)
 	mux.HandleFunc("POST /tailnet/{name}/restart", d.handleRestart)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
@@ -840,7 +844,11 @@ func (d *Daemon) checkHealth(ctx context.Context) {
 		}
 		online := false
 		if st, err := tn.lc.Status(ctx); err == nil && st.BackendState == "Running" && st.Self != nil {
-			online = st.Self.Online // connected to the control plane (map poll open)
+			// Self.Online is control-plane only (open map poll). A pong from a
+			// peer through the path the forwarder actually uses is the other
+			// half — an open map poll with dead peer paths is exactly the
+			// stuck state this watchdog exists to catch.
+			online = st.Self.Online && d.datapathOK(ctx, tn, st)
 		}
 		now := time.Now()
 		h := d.health[tn.conf.Name]
@@ -853,7 +861,7 @@ func (d *Daemon) checkHealth(ctx context.Context) {
 			h.everOnline = true
 		}
 		dead := tn.forwarderDead()
-		if !needsRestart(h, online, dead, now) {
+		if !needsRestart(h, dead, now) {
 			continue
 		}
 		slog.Warn("tailnet unhealthy — restarting in place (node state kept, no re-login)",
@@ -865,6 +873,51 @@ func (d *Daemon) checkHealth(ctx context.Context) {
 			slog.Error("health restart failed", "name", tn.conf.Name, "err", err)
 		}
 	}
+}
+
+// datapathOK probes peer traffic with the same TSMP ping `check` uses.
+// Only peers control reports online are fair targets — an offline peer must
+// never read as our datapath being dead. Two tries weed out one peer with
+// broken disco; no probeable peer is vacuously true (nothing to prove it
+// wrong, so health falls back to the control-plane signal).
+func (d *Daemon) datapathOK(ctx context.Context, tn *Tailnet, st *ipnstate.Status) bool {
+	peers := make([]*ipnstate.PeerStatus, 0, len(st.Peer))
+	for _, p := range st.Peer {
+		peers = append(peers, p)
+	}
+	targets := probeTargets(peers)
+	if len(targets) == 0 {
+		return true
+	}
+	ping := newPinger(tn.lc)
+	for _, ip := range targets {
+		pctx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+		_, ok := ping(pctx, ip)
+		cancel()
+		if ok {
+			return true
+		}
+	}
+	slog.Warn("datapath probe failed — tailnet reads online but peers are unreachable", "name", tn.conf.Name, "tried", len(targets))
+	return false
+}
+
+// probeTargets picks up to two online peers as TSMP targets, lowest IP first
+// so the two-try hedge probes the same pair each tick (the caller's slice
+// comes from a map, so sorting is what makes the choice stable).
+func probeTargets(peers []*ipnstate.PeerStatus) []netip.Addr {
+	var ips []netip.Addr
+	for _, p := range peers {
+		if p == nil || !p.Online || len(p.TailscaleIPs) == 0 {
+			continue
+		}
+		ips = append(ips, p.TailscaleIPs[0])
+	}
+	slices.SortFunc(ips, func(a, b netip.Addr) int { return a.Compare(b) })
+	if len(ips) > 2 {
+		ips = ips[:2]
+	}
+	return ips
 }
 
 // restartTailnet stops and starts one tailnet in place, keeping its state dir
@@ -1314,6 +1367,26 @@ func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
 		tc.AllowAll = *req.On
 		return nil
 	}, nil)
+}
+
+// handleNativeDNS toggles whether this tailnet's native MagicDNS name
+// (host.tailXXXX.ts.net) is ALSO written to the /etc/hosts managed block.
+// DNS resolution is untouched — the responder and the resolved routing domains
+// keep answering both spellings either way. Off by default so the hosts block
+// (which drives shell hostname completion) offers one deterministic spelling.
+func (d *Daemon) handleNativeDNS(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.On == nil {
+			return clientError{"body must be {\"on\": true|false}"}
+		}
+		tc.NativeDNS = *req.On
+		return nil
+	}, func(req selectionReq) string {
+		if req.On != nil && *req.On {
+			return "native MagicDNS name added to the hosts block (completion offers both spellings)"
+		}
+		return "native MagicDNS name removed from the hosts block — completion offers <host>.<domain> only"
+	})
 }
 
 // handleDomain sets the tailnet's friendly DNS suffix (my-server.<domain>);

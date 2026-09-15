@@ -17,16 +17,22 @@ const (
 	hostsEnd   = "# ts-multinet end"
 )
 
-// hostsEntry is one selected resource rendered into the managed block.
+// hostsEntry is one selected resource rendered into the managed block. Native
+// includes the canonical MagicDNS name on the line: off by default, so hostname
+// completion sees exactly one deterministic spelling (the friendly alias).
 type hostsEntry struct {
 	IP      string // synthetic 198.18.x
 	Alias   string // friendly alias, e.g. "nucbox.skynet"
 	FQDN    string // canonical MagicDNS name
 	Tailnet string // config tailnet name (documentation in the line comment)
+	Native  bool   // also list FQDN (opt-in per tailnet, native_dns)
 }
 
 func hostsLine(e hostsEntry) string {
-	return fmt.Sprintf("%s %s %s  # ts-multinet (%s)", e.IP, e.Alias, e.FQDN, e.Tailnet)
+	if e.Native && e.FQDN != "" {
+		return fmt.Sprintf("%s %s %s  # ts-multinet (%s)", e.IP, e.Alias, e.FQDN, e.Tailnet)
+	}
+	return fmt.Sprintf("%s %s  # ts-multinet (%s)", e.IP, e.Alias, e.Tailnet)
 }
 
 // writeHostsBlock replaces (or appends) the managed block in path with the
