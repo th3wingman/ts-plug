@@ -343,16 +343,53 @@ td:not(:has(input)) {
 }
 /* the FQDN column is the wide one — cap it so the peers table fits a laptop
    screen at the UI font size; hovering a cell unwraps the full value */
-th:nth-child(3),
-td:nth-child(3) {
+th.col-fqdn,
+td.col-fqdn {
   max-width: 22ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-td:nth-child(3):hover {
+td.col-fqdn:hover {
   white-space: normal;
   overflow: visible;
   word-break: break-all;
+}
+
+/* long lists scroll inside the page instead of pushing it past the
+   viewport; the header stays put while rows scroll under it */
+.table-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 250px);
+}
+.table-wrap thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+/* column picker (peers toolbar) */
+.cols {
+  position: relative;
+}
+.cols summary {
+  list-style: none;
+  cursor: pointer;
+}
+.cols__menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
 }
 tr.is-down td {
   color: var(--muted);

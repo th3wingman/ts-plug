@@ -349,6 +349,31 @@ export async function setEnabled(name, on) {
   refresh();
 }
 
+// Peer-table column visibility is a browser view preference — localStorage,
+// not daemon state: each browser picks its own.
+const PEERS_COLS_KEY = "tsm.peersCols";
+const PEERS_COLS_DEFAULT = { name: true, fqdn: false, ip: true, os: true, state: true, services: true }; // fqdn off: it is <name>.<suffix>, and the name column already shows the short form
+export function peerCols() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PEERS_COLS_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      return { ...PEERS_COLS_DEFAULT, ...saved };
+    }
+  } catch {
+    /* unreadable: fall back to defaults */
+  }
+  return { ...PEERS_COLS_DEFAULT };
+}
+export function setPeerCol(col, on) {
+  const cols = peerCols();
+  cols[col] = on;
+  try {
+    localStorage.setItem(PEERS_COLS_KEY, JSON.stringify(cols));
+  } catch {
+    /* private mode: the preference just won't persist */
+  }
+}
+
 // probePeers fetches one tailnet's peers WITH the port list — the only path
 // that probes; results are cached per peer name until the next probe.
 export async function probePeers(name) {

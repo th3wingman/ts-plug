@@ -32,12 +32,25 @@ import {
   setNativeDNS,
   setAuthKey,
   setEnabled,
+  peerCols,
+  setPeerCol,
   probePeers,
   removeTailnet,
 } from "./shared.js";
 
 const inConfig = (name) =>
   (state.config?.tailnets || []).some((t) => t.name === name);
+
+// peers-table columns (key → header label); visibility is per-browser
+// (peerCols in shared.js), toggled from the toolbar's "columns" menu.
+const PEER_COLS = [
+  ["name", "name"],
+  ["fqdn", "fqdn"],
+  ["ip", "tailnet ip"],
+  ["os", "os"],
+  ["state", "state"],
+  ["services", "services"],
+];
 
 export function renderTailnet(root, name, tab) {
   if (skipSection("detail-body")) return; // don't stomp a focused input
@@ -135,6 +148,7 @@ function renderPeers(root, name, s, tc) {
 
   const count = h("span", { class: "hint" });
   const tbody = h("tbody");
+  const theadRow = h("tr", {}); // rebuilt per render — column visibility can change
 
   const filter = state.peerFilter[name] || "";
   const matches = (p) =>
@@ -143,6 +157,14 @@ function renderPeers(root, name, s, tc) {
     (p.fqdn || "").toLowerCase().includes(filter);
 
   const renderRows = () => {
+    const cols = peerCols();
+    const span = 1 + PEER_COLS.filter(([k]) => cols[k]).length;
+    theadRow.replaceChildren(
+      h("th", {}),
+      ...PEER_COLS.filter(([k]) => cols[k]).map(([k, label]) =>
+        h("th", k === "fqdn" ? { class: "col-fqdn" } : {}, label),
+      ),
+    );
     tbody.replaceChildren();
     const hit = peers
       .filter(matches)
@@ -167,19 +189,19 @@ function renderPeers(root, name, s, tc) {
         (state.probed[name]?.[p.name] || p.services || [])
           .map((x) => ":" + x)
           .join(" ") || "—";
-      tbody.append(
-        h(
-          "tr",
-          { class: p.online ? "" : "is-down" },
-          h("td", {}, box),
-          h("td", {}, p.name || "(unnamed)"),
-          h("td", {}, p.fqdn || "—"),
-          h("td", {}, p.ip || "—"),
-          h("td", {}, p.os || ""),
-          h("td", {}, p.online ? "up" : "down"),
-          h("td", {}, services),
-        ),
+      const row = h(
+        "tr",
+        { class: p.online ? "" : "is-down" },
+        h("td", {}, box),
       );
+      if (cols.name) row.append(h("td", {}, p.name || "(unnamed)"));
+      if (cols.fqdn)
+        row.append(h("td", { class: "col-fqdn" }, p.fqdn || "—"));
+      if (cols.ip) row.append(h("td", {}, p.ip || "—"));
+      if (cols.os) row.append(h("td", {}, p.os || ""));
+      if (cols.state) row.append(h("td", {}, p.online ? "up" : "down"));
+      if (cols.services) row.append(h("td", {}, services));
+      tbody.append(row);
     }
 
     if (!shown.length) {
@@ -191,7 +213,7 @@ function renderPeers(root, name, s, tc) {
           : "no peers — still detecting the tailnet suffix"
         : "status unavailable";
       tbody.append(
-        h("tr", {}, h("td", { colspan: "7", class: "empty" }, note)),
+        h("tr", {}, h("td", { colspan: "" + span, class: "empty" }, note)),
       );
     } else if (!state.showAll[name] && hit.length > shown.length) {
       tbody.append(
@@ -200,7 +222,7 @@ function renderPeers(root, name, s, tc) {
           {},
           h(
             "td",
-            { colspan: "7" },
+            { colspan: "" + span },
             h(
               "button",
               {
@@ -237,6 +259,30 @@ function renderPeers(root, name, s, tc) {
       "div",
       { class: "toolbar" },
       search,
+      h(
+        "details",
+        { class: "cols" },
+        h("summary", { class: "btn btn--small" }, "columns"),
+        h(
+          "div",
+          { class: "cols__menu" },
+          ...PEER_COLS.map(([k, label]) =>
+            h(
+              "label",
+              { class: "switch" },
+              h("input", {
+                type: "checkbox",
+                ...(peerCols()[k] ? { checked: true } : {}),
+                onchange: (e) => {
+                  setPeerCol(k, e.target.checked);
+                  renderRows(); // rows + header only — the menu stays open
+                },
+              }),
+              " " + label,
+            ),
+          ),
+        ),
+      ),
       h(
         "button",
         {
@@ -308,24 +354,9 @@ function renderPeers(root, name, s, tc) {
 
   root.append(
     h(
-      "table",
-      {},
-      h(
-        "thead",
-        {},
-        h(
-          "tr",
-          {},
-          h("th", {}, ""),
-          h("th", {}, "name"),
-          h("th", {}, "fqdn"),
-          h("th", {}, "tailnet ip"),
-          h("th", {}, "os"),
-          h("th", {}, "state"),
-          h("th", {}, "services"),
-        ),
-      ),
-      tbody,
+      "div",
+      { class: "table-wrap" },
+      h("table", {}, h("thead", {}, theadRow), tbody),
     ),
   );
 
@@ -457,22 +488,26 @@ function renderServices(root, name, s, tc) {
 
   root.append(
     h(
-      "table",
-      {},
+      "div",
+      { class: "table-wrap" },
       h(
-        "thead",
+        "table",
         {},
         h(
-          "tr",
+          "thead",
           {},
-          h("th", {}, ""),
-          h("th", {}, "name"),
-          h("th", {}, "display"),
-          h("th", {}, "vip"),
-          h("th", {}, "ports"),
+          h(
+            "tr",
+            {},
+            h("th", {}, ""),
+            h("th", {}, "name"),
+            h("th", {}, "display"),
+            h("th", {}, "vip"),
+            h("th", {}, "ports"),
+          ),
         ),
+        tbody,
       ),
-      tbody,
     ),
   );
 
