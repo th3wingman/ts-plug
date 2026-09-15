@@ -136,7 +136,10 @@ export async function doLogin(name) {
 export async function setAllowAll(name, on) {
   try {
     await post(`/tailnet/${encodeURIComponent(name)}/allow-all`, { on });
-    msg(name, { kind: "ok", text: on ? "selecting every peer" : "allow-all off" });
+    msg(name, {
+      kind: "ok",
+      text: on ? "selecting every peer" : "allow-all off",
+    });
   } catch (e) {
     errMsg(name, e.message);
   }
@@ -204,9 +207,12 @@ export async function setHostname(name, value) {
 
 export async function togglePeer(name, peer, select) {
   try {
-    await post(`/tailnet/${encodeURIComponent(name)}/${select ? "select" : "forget"}`, {
-      peer,
-    });
+    await post(
+      `/tailnet/${encodeURIComponent(name)}/${select ? "select" : "forget"}`,
+      {
+        peer,
+      },
+    );
     delete state.peerErr[name];
   } catch (e) {
     state.peerErr[name] = e.message;
@@ -288,13 +294,22 @@ export async function addTailnet(values) {
 // (leave a field empty to keep its current/default value).
 export async function saveGlobals(values) {
   const body = {};
-  for (const k of ["mtu", "dns_listen", "upstream_dns", "ui_listen", "hosts_file"]) {
+  for (const k of [
+    "mtu",
+    "dns_listen",
+    "upstream_dns",
+    "ui_listen",
+    "hosts_file",
+  ]) {
     const v = (values[k] || "").trim();
     if (!v) continue;
     body[k] = k === "mtu" ? Number(v) : v;
   }
   if (!Object.keys(body).length) {
-    state.pageMsg = { kind: "error", text: "nothing to save — fill at least one field" };
+    state.pageMsg = {
+      kind: "error",
+      text: "nothing to save — fill at least one field",
+    };
     rerender();
     return;
   }
@@ -303,7 +318,10 @@ export async function saveGlobals(values) {
     const restart = res.needs_restart
       ? ` — needs restart: ${res.needs_restart}`
       : "";
-    state.pageMsg = { kind: "info", text: (res.ok || "globals saved") + restart };
+    state.pageMsg = {
+      kind: "info",
+      text: (res.ok || "globals saved") + restart,
+    };
   } catch (e) {
     state.pageMsg = { kind: "error", text: e.message };
   }
@@ -333,12 +351,17 @@ const STATE_CLASS = {
 };
 
 export const stateBadge = (s) =>
-  h("span", { class: "badge " + (STATE_CLASS[s] || "badge--err") }, s || "unknown");
+  h(
+    "span",
+    { class: "badge " + (STATE_CLASS[s] || "badge--err") },
+    s || "unknown",
+  );
 
 // dnsDot: dns_registered is absent until the daemon reports it — unknown
 // renders neutral, never a false alarm.
 export function dnsDot(reg) {
-  const cls = reg === true ? "dot--ok" : reg === false ? "dot--err" : "dot--idle";
+  const cls =
+    reg === true ? "dot--ok" : reg === false ? "dot--err" : "dot--idle";
   const title =
     reg === true
       ? "resolved: routing domains registered"
@@ -374,7 +397,11 @@ export function fieldRow(label, input, onSave, opts = {}) {
       { class: "field__control" },
       input,
       onSave
-        ? h("button", { class: "btn btn--small", type: "button", onclick: onSave }, "save")
+        ? h(
+            "button",
+            { class: "btn btn--small", type: "button", onclick: onSave },
+            "save",
+          )
         : null,
     ),
     opts.note ? h("p", { class: "hint" }, opts.note) : null,

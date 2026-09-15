@@ -171,7 +171,9 @@ function renderPeers(root, name, s, tc) {
             ? "no peers match the filter"
             : "no peers"
           : "no peers — still detecting the tailnet suffix";
-      tbody.append(h("tr", {}, h("td", { colspan: "7", class: "empty" }, note)));
+      tbody.append(
+        h("tr", {}, h("td", { colspan: "7", class: "empty" }, note)),
+      );
     } else if (!state.showAll[name] && hit.length > shown.length) {
       tbody.append(
         h(
@@ -296,19 +298,27 @@ function renderSettings(root, name, s, tc) {
       "domain",
       textInput(domainOf(tc), { class: "input" }),
       (e) => {
-        const input = e.target.closest(".field__control").querySelector("input");
+        const input = e.target
+          .closest(".field__control")
+          .querySelector("input");
         setDomain(name, input.value);
       },
-      { note: "friendly DNS suffix — my-server.<domain> resolves alongside the MagicDNS name" },
+      {
+        note: "friendly DNS suffix — my-server.<domain> resolves alongside the MagicDNS name",
+      },
     ),
     fieldRow(
       "hostname",
       textInput(s?.hostname || hostnameOf(tc), { class: "input" }),
       (e) => {
-        const input = e.target.closest(".field__control").querySelector("input");
+        const input = e.target
+          .closest(".field__control")
+          .querySelector("input");
         setHostname(name, input.value);
       },
-      { note: "node name in the tailnet; applying it restarts this tailnet — no re-login" },
+      {
+        note: "node name in the tailnet; applying it restarts this tailnet — no re-login",
+      },
     ),
     infoRow("suffix", s?.suffix || "(detected when Running)"),
     infoRow("node ip", s?.assigned_ip),
@@ -357,7 +367,11 @@ function renderSettings(root, name, s, tc) {
               ),
             ),
           )
-        : h("span", { class: "field__value" }, "none — select peers on the Peers tab"),
+        : h(
+            "span",
+            { class: "field__value" },
+            "none — select peers on the Peers tab",
+          ),
     ),
   );
 
@@ -367,16 +381,22 @@ function renderSettings(root, name, s, tc) {
       "cidr",
       textInput(s?.cidr || tc.cidr, { class: "input" }),
       (e) => {
-        const input = e.target.closest(".field__control").querySelector("input");
+        const input = e.target
+          .closest(".field__control")
+          .querySelector("input");
         setCIDR(name, input.value);
       },
-      { note: "synthetic range inside 198.18.0.0/15, no overlap with other tailnets" },
+      {
+        note: "synthetic range inside 198.18.0.0/15, no overlap with other tailnets",
+      },
     ),
     fieldRow(
       "tun",
       textInput(tc.tun, { class: "input" }),
       (e) => {
-        const input = e.target.closest(".field__control").querySelector("input");
+        const input = e.target
+          .closest(".field__control")
+          .querySelector("input");
         setTUN(name, input.value);
       },
       { note: "TUN device name, 1-15 chars" },

@@ -5,8 +5,8 @@ Run several tailnets transparently on one host at the same time.
 ## Why you want this (the short version)
 
 **The problem:** your machine can only be in one tailnet at a time. Need to
-reach a host on skynet and then a host on corp? You switch profiles back and
-forth, all day. That sucks.
+reach a host on skynet and then a host on msinfra? You switch profiles back
+and forth, all day. That sucks.
 
 **ts-multinet fixes that.** It connects to *all* your tailnets at once and
 makes the hosts you care about reachable by name from anywhere on the
@@ -16,7 +16,6 @@ as a fallback. After that, from any app, at the same time:
 ```sh
 ssh nucbox.skynet            # tailnet 1
 curl http://zombie.msinfra    # tailnet 2
-ping rpi4-sk-01.corp         # tailnet 3
 ```
 
 No profile switching. No auth keys to rotate. Your normal `tailscaled` (if
@@ -319,8 +318,8 @@ block for `status`, the FQDN column for `peers`, raw fields for `check`; the
 JSON replies already carry these fields). Multi-peer `select`/`forget` with
 `--json` emit one object per line.
 sudo ts-multinet forget skynet rpi4-sk-01       # stop exposing it
-sudo ts-multinet allow-all corp on              # every non-Mullvad peer
-sudo ts-multinet domain corp                    # print the friendly suffix (set: domain corp <name>)
+sudo ts-multinet allow-all msinfra on           # every non-Mullvad peer
+sudo ts-multinet domain msinfra                 # print the friendly suffix (set: domain msinfra <name>)
 sudo ts-multinet config                         # effective config, as the daemon sees it
 
 ```

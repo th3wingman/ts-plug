@@ -2,7 +2,13 @@
 // Views live in views/ (overview, tailnet detail, config) and pull shared
 // state/actions from views/shared.js.
 
-import { $, refresh, reloadDaemon, setRerender, POLL_MS } from "./views/shared.js";
+import {
+  $,
+  refresh,
+  reloadDaemon,
+  setRerender,
+  POLL_MS,
+} from "./views/shared.js";
 import { renderOverview } from "./views/overview.js";
 import { renderTailnet } from "./views/tailnet.js";
 import { renderConfig } from "./views/config.js";
