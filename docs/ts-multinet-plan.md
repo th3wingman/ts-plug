@@ -114,26 +114,61 @@ Nothing — the CLI flags lane (`872c1c3`) and both DNS hardening pieces
 1. ✅ **Reinstall + verify done (post-b787d0f)**: pi.dev resolves, corp shows
    33/42 real peers, all four tailnets Running, --details clean, restart
    without DNS/EBUSY incidents.
-2. User housekeeping (not code): delete the `tsm-probe` device from the
-   SkyNet console (bisect artifact); check corp's ACLs for the 42-of-1834
-   visibility; regular `tailscaled` restart whenever.
+2. User housekeeping (not code): `sudo resolvectl revert` clears the three
+   stale **global** `DNS Servers: 127.0.0.1` entries left by an early build;
+   delete the `tsm-probe` device from the SkyNet console (bisect artifact);
+   check corp's ACLs for the 42-of-1834 visibility; regular `tailscaled`
+   restart whenever (stopped here for a clean system — coexists by design).
 3. **PR** from `ts-plug/multinet-host-mode` (git hard gate: ask the user
    first; sample recent PR bodies first).
-   (restarts the daemon; all fixes land; msinfra should self-start via the
-   TUN-retry). Then:
-   - `sudo ts-multinet status` → three tailnets Running
-   - restart the daemon once more and watch general DNS survive the window
-     (Chrome test); `resolvectl` shows per-link only, no global 127.0.0.1
-   - `ts-multinet --json status | jq .` and `-details peers skynet` smoke
-   - allow-all on/off once, domain set/clear once
-2. User housekeeping (not code): `sudo resolvectl revert` clears three stale
-   **global** `DNS Servers: 127.0.0.1` entries left by an early build (the
-   Chrome NXDOMAIN during restarts — inert while the daemon runs); delete the
-   `tsm-probe` device from the SkyNet console (bisect artifact); regular
-   `tailscaled` on this host was stopped for a clean system — restart any
-   time, it coexists by design.
-3. **PR** from `ts-plug/multinet-host-mode` once the verification passes (git
-   hard gate: ask the user first; sample recent PR bodies first).
+4. **Web UI redesign** — plan below; implementation via subagent lanes A/B/C.
+
+## Web UI redesign — queued plan
+
+Approved design (plan-mode session, all three forks answered: drill-down IA,
+filter+cap peers, vanilla restructured). Implementation starts from commit
+`540e6fe`.
+
+**IA**: hash routing (`#/`, `#/tailnet/<name>[/settings]`, `#/config`).
+Overview is read-only: daemon header line, one summary row per tailnet
+(state badge, name, suffix, domain, hostname, peers up/total, selected, DNS
+registered dot), rows link to detail, zero actions; empty state CTA → Config.
+Tailnet detail: header (name/state/hostname/our IP, Login button when not
+Running) + sub-tabs **Peers** (search filter, table name/fqdn/IP/OS/online/
+services, render cap 200 with "show all N", selection checkboxes, allow-all
+rows checked+disabled; port probing click-only — the 5s poll never probes)
+and **Settings** (domain, hostname with live-apply note, allow-all, enabled,
+resources chips with per-chip forget, cidr/tun with stop/start note, suffix
+read-only; danger zone: remove). Config page: globals form (mtu, dns_listen,
+upstream_dns, ui_listen, hosts_file — restart badges; `state_dir` excluded,
+orphas node state) + add-tailnet form + collapsible read-only effective-config
+preview.
+
+**API contract** (so lanes parallelize): `GET /status` per-tailnet gains
+`dns_registered` bool from resolvedSync; new `POST /config` accepts the globals
+subset, validates, patches the file via configpatch (comments survive),
+returns `{ok, needs_restart: "mtu, dns_listen"}`; `state_dir` rejected with a
+manual-edit pointer; `/peers` unchanged (UI stops passing `ports=` by
+default).
+
+**Code structure**: `index.html` shell only; `app.js` = state, 5s polling
+(paused when hidden), router, shared fetch; `web/views/` = `overview.js`,
+`tailnet.js`, `config.js`, `shared.js` (h(), badges, form rows — moved out of
+app.js); `style.css` extended, same dark tokens.
+
+**Lanes**: A (daemon: two API additions + tests), B (UI restructure, parallel
+— the API contract is its interface), C (parent: review, merge, gates,
+README/install touch-ups, on-host walkthrough).
+
+**Acceptance**: Go unit tests per lane + `web_test.go` serving checks; manual
+on this host — overview informative, skynet drill-down filter/cap/select,
+settings saves live, cidr edit applies via stop/start without re-login, config
+page shows restart badges, zero probe traffic during polls (journal), corp's
+42-peer table instant, hash URLs survive reload/back.
+
+**Assumptions**: hash routing; sub-tabs in detail; click-to-probe; no
+virtualization/pagination/framework/auth changes; old dashboard inline editors
+removed; probe list stays 22,80,443,8080.
 
 ## Backlog (not in scope of this plan)
 
