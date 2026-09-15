@@ -155,15 +155,20 @@ The daemon serves a small control panel at **<http://127.0.0.1:8123>** (knob:
 `ui_listen`) — same API the CLI talks to, rendered for a browser. Drill-down
 layout, hash routes:
 
-- **Overview** (`#/`) — read-only landing: daemon line, then one row per
-  tailnet (state, suffix, domain, hostname, node IP, peers up/total, selected,
-  DNS-registered dot). Click a row to drill in; nothing is editable here.
-- **Tailnet detail** (`#/tailnet/<name>`) — **Peers**: name/FQDN filter, a
-  200-row render cap with a "show all" toggle, per-row selection checkboxes,
-  and a **probe** button that is the *only* path that dials ports (the 5s poll
-  never does). **Services** (`#/tailnet/<name>/services`): advertised VIP
-  services with their VIP, advertised ports, a name/display filter, and
-  selection checkboxes (ACL-gated; never probed). **Settings**
+- **Overview** (`#/`) — read-only landing: a summary line (tailnets, running,
+  peers up/total, advertised services, selected) then one row per tailnet
+  (state, suffix, domain, hostname, node IP, peers up/total, services,
+  selected, DNS-registered dot). Click a row to drill into that tailnet;
+  nothing is editable here.
+- **Tailnet detail** (`#/tailnet/<name>`) — a breadcrumb back to the overview,
+  then **Peers**: name/FQDN filter, a 200-row render cap with a "show all"
+  toggle, a **hide inactive** toggle (hides offline peers), per-row selection
+  checkboxes, a **clear all** button (unselects every peer *and* service on the
+  tailnet in one write), and a **probe** button that is the *only* path that
+  dials ports (the 5s poll never does). **Services**
+  (`#/tailnet/<name>/services`): advertised VIP services with their VIP,
+  advertised ports, a name/display filter, selection checkboxes, and
+  **clear all** (ACL-gated; never probed). **Settings**
   (`#/tailnet/<name>/settings`): domain, hostname, allow-all, resource chips,
   plus structural **cidr/tun** — applying those restarts just that tailnet
   (node state and login survive). Danger zone removes the tailnet, keeping
@@ -173,6 +178,12 @@ layout, hash routes:
   one, the add-tailnet form (cidr/tun/domain/hostname optional), and a
   collapsible view of the effective config. `state_dir` is deliberately not
   editable here — moving it orphans node state; edit the file if you mean it.
+
+The topbar carries a config indicator: green **config applied** when the
+running config matches the file, amber **config changed — Reload** when the
+file was edited after the last apply (click Reload). Tailnet-level changes
+apply immediately — the per-action note ("config updated; selections
+re-applied") is the confirmation; only globals need a service restart.
 
 It binds on localhost only, no auth: same trust model as the unix control
 socket (root-owned, local-only). Manage remotely over SSH port-forwarding.

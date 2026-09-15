@@ -55,6 +55,7 @@ export const state = {
   status: [], // GET /status
   peers: [], // GET /peers (no ports: probing is click-only)
   services: [], // GET /services (advertised VIP services; never probed)
+  applied: null, // GET /applied (config drift → "reload needed")
   config: null, // GET /config
   msgs: {}, // tailnet -> {kind, text, link?, transient?}
   pageMsg: null, // {kind, text} config-page / add-tailnet feedback
@@ -62,6 +63,7 @@ export const state = {
   probed: {}, // tailnet -> {peerName: [ports]} — click-to-probe results
   peerFilter: {}, // tailnet -> filter text
   svcFilter: {}, // tailnet -> services filter text
+  hideInactive: {}, // tailnet -> bool (hide offline peers)
   showAll: {}, // tailnet -> bool (reveal beyond PEER_CAP)
 };
 
@@ -88,15 +90,17 @@ export function errMsg(tailnet, text) {
 
 export async function refresh() {
   try {
-    const [status, peers, services, config] = await Promise.all([
+    const [status, peers, services, applied, config] = await Promise.all([
       get("/status"),
       get("/peers"), // never ports= here — probing is on demand
       get("/services"),
+      get("/applied"),
       get("/config"),
     ]);
     state.status = status || [];
     state.peers = peers || [];
     state.services = services || [];
+    state.applied = applied || null;
     state.config = config;
     // transient messages (login flow) go stale once the tailnet is Running;
     // warnings and errors stay until the next action replaces them
@@ -109,7 +113,35 @@ export async function refresh() {
   } catch {
     $("#offline-banner").hidden = false; // keep last data on screen
   }
+  paintApplied(); // topbar: applied vs. config-file drift
   rerender(); // re-render the current view
+}
+
+// paintApplied renders the topbar indicator: green when the running config
+// matches the file, amber when the file changed after the last apply (a
+// manual edit the daemon has not re-read — Reload applies it).
+function paintApplied() {
+  const el = $("#applied");
+  if (!el) return;
+  const a = state.applied;
+  if (!a) {
+    el.textContent = "";
+    el.className = "topbar__applied";
+    el.title = "";
+    return;
+  }
+  if (a.dirty) {
+    el.textContent = "config changed — Reload";
+    el.className = "topbar__applied is-dirty";
+    el.title =
+      "the config file was edited after the last apply — click Reload to apply it";
+  } else {
+    el.textContent = "config applied";
+    el.className = "topbar__applied is-ok";
+    el.title = a.applied_at
+      ? `config file applied at ${a.applied_at}`
+      : "config file applied";
+  }
 }
 
 // --- actions -----------------------------------------------------------------
@@ -226,6 +258,25 @@ export async function togglePeer(name, peer, select) {
 
 export async function forgetPeer(name, peer) {
   await togglePeer(name, peer, false);
+}
+
+// clearSelections unselects everything on a tailnet (resources emptied and
+// allow-all off) in one write, so "select nothing" is a single action rather
+// than a forget per resource.
+export async function clearSelections(name) {
+  if (
+    !window.confirm(
+      `clear all selections on "${name}"? peers and services stop resolving from this host`,
+    )
+  )
+    return;
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/clear`);
+    msg(name, { kind: "ok", text: res.ok || "all selections cleared" });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
 }
 
 // probePeers fetches one tailnet's peers WITH the port list — the only path

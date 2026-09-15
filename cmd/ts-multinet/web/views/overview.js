@@ -18,6 +18,14 @@ export function renderOverview(root) {
   const st = state.status;
   const cfg = state.config;
 
+  const svcCount = (name) =>
+    state.services.find((x) => x.name === name)?.services?.length || 0;
+  const running = st.filter((s) => s.state === "Running").length;
+  const peersUp = st.reduce((n, s) => n + (s.up || 0), 0);
+  const peersTotal = st.reduce((n, s) => n + (s.peers || 0), 0);
+  const svcs = st.reduce((n, s) => n + svcCount(s.name), 0);
+  const selected = st.reduce((n, s) => n + (s.selected || 0), 0);
+
   root.append(
     h(
       "div",
@@ -25,9 +33,17 @@ export function renderOverview(root) {
       h(
         "p",
         { class: "hint" },
-        `${st.length} tailnet${st.length === 1 ? "" : "s"}`,
-        cfg?.dns_listen ? ` · DNS ${cfg.dns_listen}` : " · DNS 127.0.0.1:53",
+        `${st.length} tailnet${st.length === 1 ? "" : "s"} · ${running} running`,
+        ` · ${peersUp}/${peersTotal} peers up`,
+        ` · ${svcs} service${svcs === 1 ? "" : "s"}`,
+        ` · ${selected} selected`,
+      ),
+      h(
+        "p",
+        { class: "hint" },
+        cfg?.dns_listen ? `DNS ${cfg.dns_listen}` : "DNS 127.0.0.1:53",
         cfg?.hosts_file ? ` · hosts ${cfg.hosts_file}` : "",
+        " · click a tailnet to manage its peers, services and settings",
       ),
     ),
   );
@@ -53,6 +69,7 @@ export function renderOverview(root) {
   const rows = h("div", { class: "rows" });
   for (const s of st) {
     const tc = confFor(s.name);
+    const advertised = svcCount(s.name);
     rows.append(
       h(
         "a",
@@ -71,6 +88,7 @@ export function renderOverview(root) {
           fact("hostname", s.hostname || hostnameOf(tc)),
           fact("node ip", s.assigned_ip || "—"),
           fact("peers", `${s.up} up / ${s.peers} total`),
+          fact("services", String(advertised)),
           fact("selected", String(s.selected ?? 0)),
         ),
         h(
@@ -82,7 +100,11 @@ export function renderOverview(root) {
             dnsDot(s.dns_registered),
             h("span", { class: "hint" }, "dns"),
           ),
-          h("span", { class: "row__chev" }, "›"),
+          h(
+            "span",
+            { class: "row__chev", title: `open ${s.name}` },
+            "→",
+          ),
         ),
       ),
     );

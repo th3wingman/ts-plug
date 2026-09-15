@@ -43,6 +43,7 @@ systemd restarts; daemon owns the config file but manual edits survive.
 | UI | drill-down console: hash router, read-only Overview, per-tailnet detail (Peers filter/cap + click-only probing; Settings), Config page for globals + add; API additions `dns_registered` + `POST /config` (globals, comment-preserving, needs_restart) | `bd4d245`, `6627807` |
 | UI | structural **cidr/tun** endpoints (range/overlap + device-clash validation, works parked, applies via stop/start) wired into Settings; async TUN-retry nil-ctx panic fixed (found by the new tests) | `e718d69` |
 | Services | advertised `svc:<label>` VIP services as first-class selectable resources: discovery via `lc.GetServices`, service-aware resolver + `resolveSelections`, `GET /services`, `svc:` select validation naming the kind, hosts-block alias parity, `services` CLI verb + `--details status` breakdown, UI Services sub-tab | *this branch* |
+| UI polish | config-drift indicator (`GET /applied` + topbar applied/dirty), `POST /tailnet/{name}/clear`, overview summary line + services count, detail breadcrumb, Peers **hide inactive**, **clear all** on Peers/Services | *this branch* |
 | Docs | plan status updates | `a837866` |
 | CLI | `--json` / `--details` flags on every command (raw replies, JSONL multi-peer, extended human forms); peers replies carry FQDN | `872c1c3` |
 | DNS hardening | routing domains set before the DNS server at registration; forwarder prefers real upstreams (`/run/systemd/resolve/resolv.conf`) over the resolved stub — no forwarding loop | `a593d09` |

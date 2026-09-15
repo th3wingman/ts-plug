@@ -65,6 +65,13 @@ type Daemon struct {
 	// services is the live advertised-service discovery. A field so control
 	// tests can stub the service list the way they stub peerShorts.
 	services func(ctx context.Context, tn *Tailnet) (map[tailcfg.ServiceName]tailcfg.ServiceDetails, error)
+
+	// applied snapshots the config file after the last successful apply, so a
+	// later manual edit is detectable as drift (the UI then says "reload").
+	// Guarded by appliedMu, deliberately independent of cfgMu/d.mu.
+	appliedMu    sync.Mutex
+	appliedAt    time.Time
+	appliedMtime time.Time
 }
 
 func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
@@ -163,6 +170,7 @@ func (d *Daemon) syncTailnets(cfg *Config) error {
 		}
 	}
 	d.applySelections()
+	d.recordApplied()
 	if len(startErrs) > 0 {
 		return fmt.Errorf("tailnets in config but not started (retried on every config change and `reload`): %s", strings.Join(startErrs, "; "))
 	}
@@ -547,6 +555,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /peers", d.handlePeers)
 	mux.HandleFunc("GET /services", d.handleServices)
+	mux.HandleFunc("GET /applied", d.handleApplied)
 	mux.HandleFunc("GET /check", d.handleCheck)
 	mux.HandleFunc("GET /config", d.handleConfig)
 	mux.HandleFunc("POST /config", d.handleUpdateConfig)
@@ -555,6 +564,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/select", d.handleSelect)
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
+	mux.HandleFunc("POST /tailnet/{name}/clear", d.handleClear)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
 	mux.HandleFunc("POST /tailnet/{name}/hostname", d.handleHostname)
 	mux.HandleFunc("POST /tailnet/{name}/cidr", d.handleCIDR)
@@ -709,6 +719,53 @@ func (d *Daemon) handleServices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, ts)
 	}
 	writeJSON(w, out)
+}
+
+// recordApplied snapshots the config file's mtime after a successful sync, so
+// a later manual edit is visible as drift until the next reload.
+func (d *Daemon) recordApplied() {
+	fi, err := os.Stat(d.cfgPath)
+	if err != nil {
+		return
+	}
+	d.appliedMu.Lock()
+	d.appliedAt = time.Now()
+	d.appliedMtime = fi.ModTime()
+	d.appliedMu.Unlock()
+}
+
+// appliedJSON is the /applied reply: whether the on-disk config differs from
+// what the daemon last applied, and when that apply happened.
+type appliedJSON struct {
+	Dirty     bool   `json:"dirty"`
+	AppliedAt string `json:"applied_at,omitempty"` // RFC3339
+}
+
+// handleApplied reports config drift: true when the file's mtime is newer than
+// the last apply (a manual edit, or a change that failed to write back).
+func (d *Daemon) handleApplied(w http.ResponseWriter, r *http.Request) {
+	fi, err := os.Stat(d.cfgPath)
+	d.appliedMu.Lock()
+	at, mt := d.appliedAt, d.appliedMtime
+	d.appliedMu.Unlock()
+	out := appliedJSON{}
+	if !mt.IsZero() {
+		out.Dirty = err == nil && fi.ModTime().After(mt)
+	}
+	if !at.IsZero() {
+		out.AppliedAt = at.Format(time.RFC3339)
+	}
+	writeJSON(w, out)
+}
+
+// handleClear unselects everything on a tailnet — resources emptied and
+// allow_all off in one comment-preserving write.
+func (d *Daemon) handleClear(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		tc.Resources = nil
+		tc.AllowAll = false
+		return nil
+	}, nil)
 }
 
 func (d *Daemon) handleCheck(w http.ResponseWriter, r *http.Request) {

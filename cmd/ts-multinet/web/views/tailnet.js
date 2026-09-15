@@ -27,6 +27,7 @@ import {
   setAllowAll,
   togglePeer,
   forgetPeer,
+  clearSelections,
   probePeers,
   removeTailnet,
 } from "./shared.js";
@@ -53,6 +54,16 @@ export function renderTailnet(root, name, tab) {
     );
     return;
   }
+
+  root.append(
+    h(
+      "div",
+      { class: "crumb" },
+      h("a", { class: "crumb__back", href: "#/" }, "← overview"),
+      h("span", { class: "crumb__sep" }, "/"),
+      h("span", { class: "crumb__here" }, name),
+    ),
+  );
 
   // header: identity + the one action that belongs to a not-yet-running node
   const head = h(
@@ -127,7 +138,9 @@ function renderPeers(root, name, s, tc) {
 
   const renderRows = () => {
     tbody.replaceChildren();
-    const hit = peers.filter(matches);
+    const hit = peers
+      .filter(matches)
+      .filter((p) => !state.hideInactive[name] || p.online);
     const shown = state.showAll[name] ? hit : hit.slice(0, PEER_CAP);
 
     for (const p of shown) {
@@ -239,6 +252,32 @@ function renderPeers(root, name, s, tc) {
         },
         state.showAll[name] ? "cap rows" : "show all",
       ),
+      h(
+        "button",
+        {
+          class: "btn btn--small",
+          type: "button",
+          title: "hide offline peers",
+          onclick: (e) => {
+            state.hideInactive[name] = !state.hideInactive[name];
+            e.target.textContent = state.hideInactive[name]
+              ? "show inactive"
+              : "hide inactive";
+            renderRows(); // rows only — the other controls stay put
+          },
+        },
+        state.hideInactive[name] ? "show inactive" : "hide inactive",
+      ),
+      h(
+        "button",
+        {
+          class: "btn btn--small",
+          type: "button",
+          title: "unselect every peer and service on this tailnet",
+          onclick: () => clearSelections(name),
+        },
+        "clear all",
+      ),
       count,
     ),
   );
@@ -342,7 +381,9 @@ function renderServices(root, name, s, tc) {
         : services.length
           ? "no services match the filter"
           : "no advertised services visible — service visibility is ACL-gated on the tailnet";
-      tbody.append(h("tr", {}, h("td", { colspan: "5", class: "empty" }, note)));
+      tbody.append(
+        h("tr", {}, h("td", { colspan: "5", class: "empty" }, note)),
+      );
     }
     const sel = services.filter((x) => selected.has(x.name)).length;
     count.textContent = `${hit.length} shown · ${sel} selected`;
@@ -360,7 +401,24 @@ function renderServices(root, name, s, tc) {
     },
   });
 
-  root.append(h("div", { class: "toolbar" }, search, count));
+  root.append(
+    h(
+      "div",
+      { class: "toolbar" },
+      search,
+      h(
+        "button",
+        {
+          class: "btn btn--small",
+          type: "button",
+          title: "unselect every peer and service on this tailnet",
+          onclick: () => clearSelections(name),
+        },
+        "clear all",
+      ),
+      count,
+    ),
+  );
   root.append(
     h(
       "p",

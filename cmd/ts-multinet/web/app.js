@@ -23,7 +23,9 @@ function parseRoute() {
   const parts = raw.split("/");
   if (parts[0] === "config") return { view: "config" };
   if (parts[0] === "tailnet" && parts[1]) {
-    const tab = ["settings", "services"].includes(parts[2]) ? parts[2] : "peers";
+    const tab = ["settings", "services"].includes(parts[2])
+      ? parts[2]
+      : "peers";
     return {
       view: "tailnet",
       name: decodeURIComponent(parts[1]),
