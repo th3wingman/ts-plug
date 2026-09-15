@@ -14,8 +14,10 @@
 // (mtu, dns_listen, upstream_dns, state_dir, hosts_file, ui_listen)
 // need a service restart.
 //
-// No authkeys: node state under state_dir persists, so login is once, in the
-// browser, forever. Removing a tailnet keeps its state — re-adding logs back
+// Auth keys are optional (tagged/automation nodes): "auth_key": "tskey-auth-…"
+// on a tailnet enrolls it without a browser — the key lives in this file and
+// is never shown again (config output redacts it). Ambient TS_AUTHKEY env
+// vars stay rejected. Removing a tailnet keeps its state — re-adding logs back
 // in without a browser.
 {
   // matches StateDirectory= in the systemd unit; the bare default is ".state"
@@ -54,6 +56,9 @@
     //   //                               // on the /etc/hosts line, so shell completion
     //   //                               // offers both spellings; DNS resolves either
     //   //                               // way; default false
+    //   // "auth_key": "tskey-auth-…",  // tagged-device enrollment — node joins without
+    //   //                               // a browser (tag comes from the key);
+    //   //                               // stored here, redacted in config output
     // },
   ]
 }

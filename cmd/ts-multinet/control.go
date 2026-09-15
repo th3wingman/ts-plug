@@ -606,6 +606,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
 	mux.HandleFunc("POST /tailnet/{name}/native-dns", d.handleNativeDNS)
+	mux.HandleFunc("POST /tailnet/{name}/authkey", d.handleAuthKey)
 	mux.HandleFunc("POST /tailnet/{name}/clear", d.handleClear)
 	mux.HandleFunc("POST /tailnet/{name}/restart", d.handleRestart)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
@@ -1103,11 +1104,24 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 
 // handleConfig returns the effective on-disk config — the file is the source
 // of truth and is re-read on every query.
+// authKeyRedacted replaces a stored auth key in every config copy the daemon
+// serves; the real value only ever lives in the 0600 config file.
+const authKeyRedacted = "(redacted)"
+
+// handleConfig returns the effective on-disk config — the file is the source
+// of truth. Auth keys are redacted: this is display-only, and since every
+// mutation loads the real file, an update can never wipe a stored key (rotate
+// by sending a new one via /authkey or `login <name> <authkey>`).
 func (d *Daemon) handleConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := loadConfig(d.cfgPath)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	for i := range cfg.Tailnets {
+		if cfg.Tailnets[i].AuthKey != "" {
+			cfg.Tailnets[i].AuthKey = authKeyRedacted
+		}
 	}
 	writeJSON(w, cfg)
 }
@@ -1369,6 +1383,65 @@ func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
 	}, nil)
 }
 
+// handleAuthKey stores an auth key for the tailnet — tagged-device /
+// automation enrollment with no browser flow (the key carries the tag). tsnet
+// reads AuthKey at start, so a parked tailnet enrolls via syncTailnets' start
+// pass; a live one is restarted to use it — but only when not already
+// Running (enrolled; the key waits for a future login-needing start). The key
+// never leaves the daemon: GET /config serves it redacted.
+func (d *Daemon) handleAuthKey(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req struct {
+		AuthKey string `json:"auth_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	key := strings.TrimSpace(req.AuthKey)
+	if key == "" {
+		writeErr(w, http.StatusBadRequest, "body must be {\"auth_key\": \"tskey-auth-…\"} — an empty key is a no-op; rotate by sending a new one")
+		return
+	}
+	d.mu.Lock()
+	wasLive := d.tailnetByName(name) != nil
+	d.mu.Unlock()
+
+	notice, err := d.applyConfigUpdate(func(c *Config) error {
+		tc := confByName(c, name)
+		if tc == nil {
+			return clientError{"no such tailnet (known: " + strings.Join(d.tailnetNames(), ", ") + ")"}
+		}
+		tc.AuthKey = key
+		return nil
+	})
+	if err != nil {
+		var ce clientError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusBadRequest, ce.msg)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	d.mu.Lock()
+	tn := d.tailnetByName(name)
+	state := ""
+	if tn != nil {
+		state, _ = tn.status()
+	}
+	d.mu.Unlock()
+	if wasLive && tn != nil && state != "Running" {
+		if rerr := d.restartTailnet(name); rerr != nil {
+			notice = strings.TrimSpace(notice + "; key stored, but the enroll restart failed: " + rerr.Error())
+		} else {
+			notice = strings.TrimSpace(notice + "; restarted to enroll with the key")
+		}
+	}
+	writeJSON(w, map[string]string{"ok": notice + " — the key is stored server-side and never displayed again"})
+}
+
 // handleNativeDNS toggles whether this tailnet's native MagicDNS name
 // (host.tailXXXX.ts.net) is ALSO written to the /etc/hosts managed block.
 // DNS resolution is untouched — the responder and the resolved routing domains
@@ -1562,6 +1635,7 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 		TUN      string `json:"tun"`
 		Domain   string `json:"domain"`
 		Hostname string `json:"hostname"`
+		AuthKey  string `json:"auth_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
 		writeErr(w, http.StatusBadRequest, "body must be {\"name\": \"...\", \"cidr\"?, \"tun\"?, \"domain\"?}")
@@ -1611,7 +1685,7 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 		if domain == "" {
 			domain = slugify(req.Name) // pre-populate the friendly suffix; still editable
 		}
-		return TailnetConf{Name: req.Name, CIDR: cidr, TUN: tun, Domain: domain, Hostname: req.Hostname}, nil
+		return TailnetConf{Name: req.Name, CIDR: cidr, TUN: tun, Domain: domain, Hostname: req.Hostname, AuthKey: strings.TrimSpace(req.AuthKey)}, nil
 	}()
 	if err != nil {
 		var ce clientError
@@ -1631,7 +1705,13 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	res := map[string]string{"ok": "tailnet added and started — `login` next", "name": tc.Name, "cidr": tc.CIDR, "tun": tc.TUN}
+	res := map[string]string{"name": tc.Name, "cidr": tc.CIDR, "tun": tc.TUN}
+	if tc.AuthKey != "" {
+		res["ok"] = "tailnet added with an auth key — enrolling without a browser (tagged per the key)"
+		res["auth_key_set"] = "true"
+	} else {
+		res["ok"] = "tailnet added and started — `login` next"
+	}
 	if tc.Domain != "" {
 		res["domain"] = tc.Domain
 	}

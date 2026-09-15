@@ -111,11 +111,16 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   state_dir, hosts_file, ui_listen) need a service restart. Removing a
   tailnet keeps its node state; re-adding logs back in without a browser.
 
-- **No authkeys.** Each tailnet is a persistent node: log it in once with
-  `ts-multinet login <tailnet>` (prints a browser URL); state persists under
-  `state_dir` and survives restarts. Set `TS_AUTHKEY`-style env vars and the
-  daemon refuses to start that tailnet — an ambient key would enroll into the
-  wrong tailnet.
+- **Auth keys for tagged devices (optional).** Default is still one-time
+  browser login: `ts-multinet login <tailnet>` (prints a URL); state persists
+  under `state_dir` and survives restarts. For tagged / automation nodes,
+  skip the browser: pass `auth_key` when adding the tailnet (API or the
+  Settings field), or `sudo ts-multinet login <tailnet> tskey-auth-…` — the
+  node enrolls tagged per the key, no browser. The key is stored in the
+  config (0600) and never shown again: `config` output and `GET /config`
+  serve it redacted, and since every mutation reloads the real file, updates
+  can't wipe it. `TS_AUTHKEY`-style env vars stay refused — an ambient key
+  would enroll into the wrong tailnet.
 - **Selection** — per tailnet, `resources` lists the short names you care
   about (as `peers` shows them); `"allow_all": true` selects every peer
   instead. Shared Mullvad exit peers are never selectable. Selections are

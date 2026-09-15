@@ -45,6 +45,7 @@ type TailnetConf struct {
 	CIDR      string   `json:"cidr"`                 // synthetic range, e.g. "198.18.1.0/24"
 	TUN       string   `json:"tun"`                  // TUN device name (<=15 chars)
 	Hostname  string   `json:"hostname,omitempty"`   // node name in the tailnet; default "ts-multinet-<name>"
+	AuthKey   string   `json:"auth_key,omitempty"`   // tskey-auth-… for tagged/automation enrollment (no browser); never sent back by the API
 	Enabled   *bool    `json:"enabled,omitempty"`    // default true
 	AllowAll  bool     `json:"allow_all,omitempty"`  // select every non-Mullvad peer instead of listing resources
 	Resources []string `json:"resources,omitempty"`  // short names to select (hosts entries + synthetic IPs)
@@ -129,11 +130,19 @@ func main() {
 			}
 			runCheckClient(cli, args[1])
 		case "login":
+			if len(args) > 3 {
+				fmt.Fprintln(os.Stderr, "usage: ts-multinet login <tailnet> [authkey] — with a key: tagged-device enrollment, no browser")
+				os.Exit(1)
+			}
 			tailnet := ""
 			if len(args) >= 2 {
 				tailnet = args[1]
 			}
-			runLoginClient(cli, tailnet)
+			authkey := ""
+			if len(args) > 2 {
+				authkey = args[2]
+			}
+			runLoginClient(cli, tailnet, authkey)
 		case "reload":
 			runReloadClient(cli)
 		case "restart":
@@ -321,6 +330,7 @@ usage:
   ts-multinet [flags] hostname <tailnet> [name|-]   set (or print) the node name in the tailnet; - clears it
   ts-multinet [flags] config                        print the effective config
   ts-multinet [flags] add <name> [cidr tun]         add a tailnet live (cidr/tun auto-picked when omitted)
+  ts-multinet [flags] login <tailnet> [authkey]     with a key: tagged enrollment, no browser; without: prints a login URL
   ts-multinet [flags] remove <name>                 stop a tailnet and drop it from config (node state kept)
 
 (every verb above talks to the running daemon over its control socket; only a

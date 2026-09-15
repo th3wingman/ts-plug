@@ -33,6 +33,31 @@ func TestProbeTargets(t *testing.T) {
 	}
 }
 
+// A live tailnet stuck in NeedsLogin restarts when a key arrives, so tsnet
+// (which reads AuthKey at start) enrolls without a browser. An empty key is
+// rejected outright — a no-op set would look like a success.
+func TestAuthKeyRestartsNeedsLogin(t *testing.T) {
+	d, _ := stubDaemon(t)
+	var restarted bool
+	d.rt.ctx = context.Background()
+	d.rt.cleanupTUN = func(cidr, dev string) {}
+	d.rt.starter = func(ctx context.Context, tc TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error) {
+		restarted = true
+		// state stays "": applySelections skips non-Running tailnets, and a
+		// stub has no lc for it to call
+		return &Tailnet{conf: tc, wg: &sync.WaitGroup{}}, nil
+	}
+	if rec := doReq(t, d, "POST", "/tailnet/dev/authkey", `{"auth_key":"tskey-auth-k2"}`); rec.Code != http.StatusOK {
+		t.Fatalf("authkey = %d %s", rec.Code, rec.Body.String())
+	}
+	if !restarted {
+		t.Fatal("NeedsLogin tailnet was not restarted to use the key")
+	}
+	if rec := doReq(t, d, "POST", "/tailnet/dev/authkey", `{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty key = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
 // The self-heal decision must not restart a node that never connected (still
 // logging in), must restart one that was online and has gone dark, and must
 // respect the cooldown so a long outage cannot thrash it.

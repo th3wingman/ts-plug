@@ -100,6 +100,13 @@ func patchConfigFile(path string, prev, next *Config) error {
 					setMember(obj, "native_dns", hujson.Bool(true))
 				}
 			}
+			if o.AuthKey != n.AuthKey {
+				if n.AuthKey == "" {
+					removeMember(obj, "auth_key")
+				} else {
+					setMember(obj, "auth_key", hujson.String(n.AuthKey))
+				}
+			}
 			if !slices.Equal(o.Resources, n.Resources) {
 				if len(n.Resources) == 0 {
 					removeMember(obj, "resources")
@@ -302,6 +309,9 @@ func insertTailnetElement(arr *hujson.Array, tc TailnetConf) {
 	}
 	if tc.Enabled != nil {
 		addMember("enabled", hujson.Bool(*tc.Enabled))
+	}
+	if tc.AuthKey != "" {
+		addMember("auth_key", hujson.String(tc.AuthKey))
 	}
 	if tc.AllowAll {
 		addMember("allow_all", hujson.Bool(true))

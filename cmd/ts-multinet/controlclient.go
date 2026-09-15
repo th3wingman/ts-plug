@@ -311,7 +311,7 @@ func formatPeersTable(tps []tailnetPeersJSON, filter string) string {
 	return b.String()
 }
 
-func formatPeersDetails(tps []tailnetPeersJSON, filter string) string {
+func formatPeersDetails(tps []tailnetPeersJSON, _ string) string { // filter applied server-side
 	var b strings.Builder
 	for _, tp := range tps {
 		fmt.Fprintf(&b, "\n== %s (%s) — %d shown, %d up ==\n", tp.Name, tp.Suffix, len(tp.Peers), tp.Up)
@@ -423,12 +423,13 @@ func runAddClient(c cliOpts, name, cidr, tun string) {
 		body["cidr"], body["tun"] = cidr, tun
 	}
 	var res struct {
-		OK     string `json:"ok"`
-		Error  string `json:"error"`
-		Name   string `json:"name"`
-		CIDR   string `json:"cidr"`
-		TUN    string `json:"tun"`
-		Domain string `json:"domain"`
+		OK         string `json:"ok"`
+		Error      string `json:"error"`
+		Name       string `json:"name"`
+		CIDR       string `json:"cidr"`
+		TUN        string `json:"tun"`
+		Domain     string `json:"domain"`
+		AuthKeySet string `json:"auth_key_set,omitempty"`
 	}
 	if err := controlPost(c.sock, "/tailnet", body, &res); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -445,6 +446,10 @@ func runAddClient(c cliOpts, name, cidr, tun string) {
 	fmt.Printf("added %s — cidr %s, tun %s\n", res.Name, res.CIDR, res.TUN)
 	if res.Domain != "" {
 		fmt.Printf("domain %s\n", res.Domain)
+	}
+	if res.AuthKeySet == "true" {
+		fmt.Println("auth key stored — enrolling without a browser (tagged per the key)")
+		return
 	}
 	fmt.Printf("next: sudo ts-multinet login %s\n", res.Name)
 }
@@ -469,7 +474,25 @@ func runRemoveClient(c cliOpts, name string) {
 	fmt.Printf("re-add anytime: sudo ts-multinet add %s — logs back in without a browser\n", name)
 }
 
-func runLoginClient(c cliOpts, tailnet string) {
+func runLoginClient(c cliOpts, tailnet, authkey string) {
+	if authkey != "" {
+		// Key enrollment: no browser — the node joins tagged per the key.
+		if tailnet == "" {
+			fmt.Fprintln(os.Stderr, "usage: ts-multinet login <tailnet> <authkey>")
+			os.Exit(1)
+		}
+		r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/authkey", map[string]string{"auth_key": authkey})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if c.json {
+			emitJSON(r)
+			return
+		}
+		fmt.Println(r.OK)
+		return
+	}
 	if tailnet == "" {
 		// No argument: report login state for every tailnet.
 		var sts []tailnetStatusJSON

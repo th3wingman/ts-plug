@@ -315,6 +315,23 @@ export async function setNativeDNS(name, on) {
   refresh();
 }
 
+// setAuthKey stores an auth key for the tailnet — tagged-device enrollment
+// with no browser flow (the tag comes from the key). The daemon never sends
+// the key back out; GET /config serves it redacted.
+export async function setAuthKey(name, key) {
+  key = (key || "").trim();
+  if (!key) return;
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/authkey`, {
+      auth_key: key,
+    });
+    msg(name, { kind: "ok", text: res.ok || "auth key stored" });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
 // probePeers fetches one tailnet's peers WITH the port list — the only path
 // that probes; results are cached per peer name until the next probe.
 export async function probePeers(name) {

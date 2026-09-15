@@ -70,6 +70,7 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	ts := &tsnet.Server{
 		Hostname: conf.nodeHostname(),
 		Dir:      dir,
+		AuthKey:  conf.AuthKey, // tagged-device enrollment: tsnet reads it at start, no browser flow (ambient env keys stay rejected above)
 	}
 	// Start (not Up): Up blocks until logged in, but tailnets boot into
 	// NeedsLogin on first run — the daemon stays up and the watcher reports

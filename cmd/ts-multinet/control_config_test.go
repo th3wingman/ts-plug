@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -203,6 +204,59 @@ func TestNativeDNSToggle(t *testing.T) {
 	}
 	if rec := doReq(t, d, "POST", "/tailnet/dev/native-dns", `{}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing on: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A stored auth key never leaves the daemon: GET /config serves it redacted,
+// and later mutations (which load the real file) cannot wipe it.
+func TestAuthKeyRedactedAndSurvives(t *testing.T) {
+	d, cfgPath := stubDaemon(t)
+	d.rt.ctx = context.Background()
+	d.rt.cleanupTUN = func(cidr, dev string) {}
+	d.rt.starter = func(ctx context.Context, tc TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error) {
+		return &Tailnet{conf: tc, wg: &sync.WaitGroup{}}, nil
+	}
+	if rec := doReq(t, d, "POST", "/tailnet/dev/authkey", `{"auth_key":"tskey-auth-secret123"}`); rec.Code != http.StatusOK {
+		t.Fatalf("authkey = %d %s", rec.Code, rec.Body.String())
+	}
+	if devConf(t, cfgPath).AuthKey != "tskey-auth-secret123" {
+		t.Fatal("auth_key not stored")
+	}
+	rec := doReq(t, d, "GET", "/config", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "tskey-auth-secret123") {
+		t.Fatal("GET /config leaked the auth key")
+	}
+	if !strings.Contains(rec.Body.String(), authKeyRedacted) {
+		t.Fatal("GET /config missing the redaction marker")
+	}
+	if rec := doReq(t, d, "POST", "/tailnet/dev/domain", `{"domain":"lab.corp"}`); rec.Code != http.StatusOK {
+		t.Fatalf("domain = %d %s", rec.Code, rec.Body.String())
+	}
+	if devConf(t, cfgPath).AuthKey != "tskey-auth-secret123" {
+		t.Fatal("a later mutation wiped the stored auth key")
+	}
+}
+
+// Adding a tailnet with an auth key stores it (one-step tagged enrollment)
+// and the response must not echo the key back.
+func TestAddTailnetWithAuthKey(t *testing.T) {
+	d, cfgPath := stubDaemon(t)
+	rec := doReq(t, d, "POST", "/tailnet", `{"name":"acme","auth_key":"tskey-auth-k3"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add = %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "tskey-auth-k3") {
+		t.Fatal("add response echoed the auth key")
+	}
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tc := confByName(cfg, "acme"); tc == nil || tc.AuthKey != "tskey-auth-k3" {
+		t.Fatalf("auth_key not stored on add: %+v", tc)
 	}
 }
 

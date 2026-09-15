@@ -92,6 +92,35 @@ func TestPatchRoundTripPreservesComments(t *testing.T) {
 	}
 }
 
+// auth_key round-trips through the patcher like any mutable field: set lands
+// in the file, clearing removes the member, comments survive.
+func TestPatchAuthKey(t *testing.T) {
+	path := testConfig(t)
+	prev := mustLoad(t, path)
+	next, err := cloneConfig(prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confByName(next, "example").AuthKey = "tskey-auth-abc123"
+	if err := patchConfigFile(path, prev, next); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	if got := confByName(mustLoad(t, path), "example"); got.AuthKey != "tskey-auth-abc123" {
+		t.Fatalf("auth_key not patched in: %+v", got)
+	}
+
+	cur := mustLoad(t, path)
+	reset, _ := cloneConfig(cur)
+	confByName(reset, "example").AuthKey = ""
+	if err := patchConfigFile(path, cur, reset); err != nil {
+		t.Fatal(err)
+	}
+	if got := confByName(mustLoad(t, path), "example"); got.AuthKey != "" {
+		t.Fatalf("auth_key not cleared: %+v", got)
+	}
+}
+
 func TestPatchForgetReverses(t *testing.T) {
 	path := testConfig(t)
 	prev := mustLoad(t, path)

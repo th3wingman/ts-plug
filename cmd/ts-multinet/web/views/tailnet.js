@@ -30,6 +30,7 @@ import {
   clearSelections,
   restartTailnet,
   setNativeDNS,
+  setAuthKey,
   probePeers,
   removeTailnet,
 } from "./shared.js";
@@ -506,6 +507,24 @@ function renderSettings(root, name, s, tc) {
       },
       {
         note: "node name in the tailnet; applying it restarts this tailnet — no re-login",
+      },
+    ),
+    fieldRow(
+      "auth key",
+      textInput("", {
+        class: "input",
+        type: "password",
+        placeholder: "tskey-auth-… — paste to store; never shown again",
+      }),
+      (e) => {
+        const input = e.target
+          .closest(".field__control")
+          .querySelector("input");
+        setAuthKey(name, input.value);
+        input.value = "";
+      },
+      {
+        note: "tagged-device enrollment — the node joins without a browser; the key stays server-side",
       },
     ),
     h(
