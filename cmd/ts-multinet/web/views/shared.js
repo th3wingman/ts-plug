@@ -279,6 +279,24 @@ export async function clearSelections(name) {
   refresh();
 }
 
+// restartTailnet stops and starts one tailnet in place (state and login kept) —
+// the manual recovery for a node a network outage left dark.
+export async function restartTailnet(name) {
+  if (
+    !window.confirm(
+      `restart tailnet "${name}"? it stops and starts this node; state and login are kept`,
+    )
+  )
+    return;
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/restart`);
+    msg(name, { kind: "info", text: res.ok || "tailnet restarted" });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
 // probePeers fetches one tailnet's peers WITH the port list — the only path
 // that probes; results are cached per peer name until the next probe.
 export async function probePeers(name) {

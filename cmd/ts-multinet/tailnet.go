@@ -43,7 +43,8 @@ type Tailnet struct {
 	mu       sync.Mutex
 	state    string // ipnstate backend state: NeedsLogin, Running, …
 	loginURL string
-	applied  int // selected resources currently in the hosts block
+	applied  int  // selected resources currently in the hosts block
+	fwdDead  bool // forwarder datapath exited unexpectedly (watchdog restarts)
 }
 
 // ambientAuthEnvs are process-wide credentials tsnet would silently use for
@@ -124,7 +125,8 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	go func() {
 		defer tn.wg.Done()
 		if err := fwd.run(tctx); err != nil && tctx.Err() == nil {
-			slog.Error("forwarder exited", "name", conf.Name, "err", err)
+			slog.Error("forwarder exited — marking the tailnet unhealthy for restart", "name", conf.Name, "err", err)
+			tn.setForwarderDead()
 		}
 	}()
 
@@ -218,6 +220,21 @@ func (t *Tailnet) setApplied(n int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.applied = n
+}
+
+// setForwarderDead marks the datapath as gone so the daemon's health watch
+// restarts this tailnet (a TUN error otherwise leaves it up but dark).
+func (t *Tailnet) setForwarderDead() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.fwdDead = true
+}
+
+// forwarderDead reports whether the datapath exited unexpectedly.
+func (t *Tailnet) forwarderDead() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.fwdDead
 }
 
 func (t *Tailnet) selectedCount() int {

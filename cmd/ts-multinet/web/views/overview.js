@@ -100,11 +100,7 @@ export function renderOverview(root) {
             dnsDot(s.dns_registered),
             h("span", { class: "hint" }, "dns"),
           ),
-          h(
-            "span",
-            { class: "row__chev", title: `open ${s.name}` },
-            "→",
-          ),
+          h("span", { class: "row__chev", title: `open ${s.name}` }, "→"),
         ),
       ),
     );

@@ -82,17 +82,28 @@ func (f *forwarder) run(ctx context.Context) error {
 	f.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
 	f.setupUDP() // udp.go
 
-	go f.tunToStack(ctx)
-	go f.stackToTun(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// The two pumps are the datapath. If either dies (TUN error), the sibling has
+	// to stop too, and run has to report it: silently living on with a half-dead
+	// pump is exactly the "connectivity never came back" failure.
+	errc := make(chan error, 2)
+	go func() { errc <- f.tunToStack(ctx) }()
+	go func() { errc <- f.stackToTun(ctx) }()
 
-	<-ctx.Done()
+	var err error
+	select {
+	case <-ctx.Done():
+	case err = <-errc:
+		cancel() // stop the sibling pump
+	}
 	f.ep.Close()
 	f.stack.Close()
-	return nil
+	return err
 }
 
 // tunToStack reads IP packets off the TUN and injects them into the stack.
-func (f *forwarder) tunToStack(ctx context.Context) {
+func (f *forwarder) tunToStack(ctx context.Context) error {
 	buf := make([]byte, int(f.mtu)+128)
 	for {
 		n, err := f.tun.Read(buf)
@@ -100,7 +111,7 @@ func (f *forwarder) tunToStack(ctx context.Context) {
 			if ctx.Err() == nil {
 				slog.Error("tun read", "tailnet", f.name, "err", err)
 			}
-			return
+			return err
 		}
 		if n == 0 {
 			continue
@@ -129,11 +140,11 @@ func (f *forwarder) tunToStack(ctx context.Context) {
 }
 
 // stackToTun writes packets the stack emits back out the TUN.
-func (f *forwarder) stackToTun(ctx context.Context) {
+func (f *forwarder) stackToTun(ctx context.Context) error {
 	for {
 		pkt := f.ep.ReadContext(ctx)
 		if pkt == nil { // context cancelled
-			return
+			return nil
 		}
 		_, err := f.tun.Write(pkt.ToView().AsSlice())
 		pkt.DecRef()
@@ -141,7 +152,7 @@ func (f *forwarder) stackToTun(ctx context.Context) {
 			if ctx.Err() == nil {
 				slog.Error("tun write", "tailnet", f.name, "err", err)
 			}
-			return
+			return err
 		}
 	}
 }

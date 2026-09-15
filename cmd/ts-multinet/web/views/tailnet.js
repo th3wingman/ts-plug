@@ -28,6 +28,7 @@ import {
   togglePeer,
   forgetPeer,
   clearSelections,
+  restartTailnet,
   probePeers,
   removeTailnet,
 } from "./shared.js";
@@ -591,6 +592,33 @@ function renderSettings(root, name, s, tc) {
       "p",
       { class: "hint" },
       "cidr and tun are structural: applying them stops and restarts this tailnet — node state is kept, so no new login.",
+    ),
+  );
+
+  root.append(
+    h("h3", { class: "section" }, "maintenance"),
+    h(
+      "div",
+      { class: "field" },
+      h("span", { class: "field__label" }, "restart"),
+      h(
+        "div",
+        { class: "field__control" },
+        h(
+          "button",
+          {
+            class: "btn",
+            type: "button",
+            onclick: () => restartTailnet(name),
+          },
+          "restart tailnet",
+        ),
+        h(
+          "span",
+          { class: "hint" },
+          "stop and start this node in place — state and login are kept; use it if a network outage left it dark",
+        ),
+      ),
     ),
   );
 

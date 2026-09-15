@@ -171,8 +171,9 @@ layout, hash routes:
   **clear all** (ACL-gated; never probed). **Settings**
   (`#/tailnet/<name>/settings`): domain, hostname, allow-all, resource chips,
   plus structural **cidr/tun** — applying those restarts just that tailnet
-  (node state and login survive). Danger zone removes the tailnet, keeping
-  node state.
+  (node state and login survive). **restart tailnet** stops and starts the node
+  in place — the manual recovery if an outage left it dark; no re-login. Danger
+  zone removes the tailnet, keeping node state.
 - **Config** (`#/config`) — globals (`mtu`, `dns_listen`, `upstream_dns`,
   `ui_listen`, `hosts_file`) with a needs-restart note on the ones that need
   one, the add-tailnet form (cidr/tun/domain/hostname optional), and a
@@ -329,6 +330,7 @@ docker exec tsm ts-multinet services            # advertised VIP services per ta
 docker exec tsm -ports 22,5432,3000 ts-multinet peers db
 docker exec tsm ts-multinet check rpi4-sk-01.tail523555.ts.net:22
 docker exec tsm ts-multinet reload              # after editing selection config
+sudo ts-multinet restart skynet                 # stop/start one node in place (state kept) — outage recovery
 sudo ts-multinet select skynet rpi4-sk-01       # expose a peer (patches the config in place)
 sudo ts-multinet select skynet svc:my-db        # expose an advertised service too
 sudo ts-multinet --json status | jq '.[] | select(.state=="Running")'
@@ -366,6 +368,14 @@ result:    OPEN (60ms) — banner: SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.2
 `check` tells you which step broke: `resolve FAILED` (not a peer), `UNREACHABLE`
 (refused/timeout, with the reason), or `OPEN` with the latency — so a slow path
 reads as `OPEN (7.2s)`, not a mystery hang.
+
+**Recovery.** tsnet normally reconnects on its own after a network outage, but
+a node can get stuck (backend not Running, the control-plane poll never
+completing) or its datapath can die. The daemon watches each tailnet's
+control-plane connectivity and, after ~90s dark (or immediately if the
+datapath died), restarts that node in place — state and login are kept. The
+manual equivalent is `sudo ts-multinet restart <tailnet>` (or the **restart
+tailnet** button on the tailnet's Settings tab in the UI).
 
 ## Protocols
 

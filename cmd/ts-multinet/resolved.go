@@ -17,16 +17,24 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
+
+// resolvedRefresh bounds how long a per-link registration is trusted without
+// re-applying it: systemd-resolved drops per-link config when it restarts
+// (network flap, upgrade), and a cache that never re-applies would leave the
+// host without tailnet DNS until the daemon restarts.
+const resolvedRefresh = 60 * time.Second
 
 // resolvedSync tracks which TUNs we configured so shutdown can revert them.
 // A daemon killed without a chance to revert leaves stale per-link config on
 // an interface that vanishes with the process; the next start re-registers.
 type resolvedSync struct {
-	mu         sync.Mutex
-	addr       string            // host[:port] of our responder, as resolvectl wants it
-	enabled    bool              // host mode + resolved present + DNS listener up
-	registered map[string]string // dev -> "suffix domain" last applied
+	mu          sync.Mutex
+	addr        string               // host[:port] of our responder, as resolvectl wants it
+	enabled     bool                 // host mode + resolved present + DNS listener up
+	registered  map[string]string    // dev -> "suffix domain" last applied
+	lastApplied map[string]time.Time // dev -> when it was last applied
 }
 
 // resolvedPresent reports whether systemd-resolved is running on this host.
@@ -46,27 +54,29 @@ func resolvectlAddr(addr string) string {
 
 func newResolvedSync(addr string, dnsUp bool) *resolvedSync {
 	return &resolvedSync{
-		addr:       resolvectlAddr(addr),
-		enabled:    dnsUp && !inContainer() && resolvedPresent(),
-		registered: make(map[string]string),
+		addr:        resolvectlAddr(addr),
+		enabled:     dnsUp && !inContainer() && resolvedPresent(),
+		registered:  make(map[string]string),
+		lastApplied: make(map[string]time.Time),
 	}
 }
 
 // register points dev's link DNS at our responder for suffix and domain.
-// Idempotent; re-registers only when either changed (config edits land via
-// the tailnet watcher re-reading tn.conf). Failures warn and move on — the
-// hosts block still resolves selected names.
+// Re-applies when either changed, and otherwise at least every resolvedRefresh
+// — cheap insurance against systemd-resolved having restarted and dropped the
+// per-link config while our cache still said "applied". Failures warn and move
+// on (uncached, so the next poll retries); the hosts block still resolves
+// selected names.
 func (s *resolvedSync) register(dev, suffix, domain string) {
 	if s == nil || !s.enabled || dev == "" || suffix == "" {
 		return
 	}
 	key := suffix + " " + domain
 	s.mu.Lock()
-	if s.registered[dev] == key {
+	if s.registered[dev] == key && time.Since(s.lastApplied[dev]) < resolvedRefresh {
 		s.mu.Unlock()
 		return
 	}
-	s.registered[dev] = key
 	s.mu.Unlock()
 
 	// Domain first, DNS server second: between the two calls the link must
@@ -74,14 +84,18 @@ func (s *resolvedSync) register(dev, suffix, domain string) {
 	// would treat it as a general resolver and could loop us back through its
 	// own stub (our historical upstream). With domains set and no server yet,
 	// the link is simply ignored until the second call lands.
-	if err := resolvectl("domain", dev, "~"+suffix, "~"+domain); err != nil {
+	if err := resolvectlFn("domain", dev, "~"+suffix, "~"+domain); err != nil {
 		slog.Warn("resolvectl domain failed — selected names still resolve via the hosts block", "dev", dev, "err", err)
 		return
 	}
-	if err := resolvectl("dns", dev, s.addr); err != nil {
+	if err := resolvectlFn("dns", dev, s.addr); err != nil {
 		slog.Warn("resolvectl dns failed — selected names still resolve via the hosts block", "dev", dev, "err", err)
 		return
 	}
+	s.mu.Lock()
+	s.registered[dev] = key
+	s.lastApplied[dev] = time.Now()
+	s.mu.Unlock()
 	slog.Info("registered with systemd-resolved", "dev", dev, "suffix", suffix, "domain", domain)
 }
 
@@ -96,9 +110,10 @@ func (s *resolvedSync) revertAll() {
 		devs = append(devs, dev)
 	}
 	s.registered = make(map[string]string)
+	s.lastApplied = make(map[string]time.Time)
 	s.mu.Unlock()
 	for _, dev := range devs {
-		if err := resolvectl("revert", dev); err != nil {
+		if err := resolvectlFn("revert", dev); err != nil {
 			slog.Warn("resolvectl revert failed", "dev", dev, "err", err)
 		}
 	}
@@ -128,11 +143,15 @@ func (s *resolvedSync) revert(dev string) {
 		return
 	}
 	delete(s.registered, dev)
+	delete(s.lastApplied, dev)
 	s.mu.Unlock()
-	if err := resolvectl("revert", dev); err != nil {
+	if err := resolvectlFn("revert", dev); err != nil {
 		slog.Warn("resolvectl revert failed", "dev", dev, "err", err)
 	}
 }
+
+// resolvectlFn is the resolvectl exec hook; tests swap it to observe calls.
+var resolvectlFn = resolvectl
 
 func resolvectl(args ...string) error {
 	out, err := exec.Command("resolvectl", args...).CombinedOutput()

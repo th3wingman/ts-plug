@@ -28,6 +28,40 @@ import (
 // probeTimeout bounds each per-port reachability check.
 const probeTimeout = 1500 * time.Millisecond
 
+// Self-heal watchdog cadence. tsnet normally reconnects on its own after a
+// network outage, but a node can get stuck (backend not Running, control-plane
+// poll never completing) or its datapath can die — both leave the host dark
+// until something restarts the node. A tailnet unseen online for
+// unhealthyAfter, or with a dead forwarder, is restarted in place;
+// restartCooldown keeps a long outage from thrashing it.
+const (
+	healthTick      = 30 * time.Second
+	unhealthyAfter  = 90 * time.Second
+	restartCooldown = 5 * time.Minute
+)
+
+// tailnetHealth is the watchdog's per-tailnet memory: when it was last online,
+// whether it ever was (a node that never connected must not be restarted), and
+// when it was last restarted (cooldown). Owned by healthWatch alone.
+type tailnetHealth struct {
+	lastOnline  time.Time
+	everOnline  bool
+	lastRestart time.Time
+}
+
+// needsRestart decides whether a tailnet's health warrants an in-place restart.
+// A dead forwarder qualifies immediately (cooldown permitting); a node that was
+// online before but has not been seen online for unhealthyAfter also qualifies.
+func needsRestart(h *tailnetHealth, online, forwarderDead bool, now time.Time) bool {
+	if h == nil || now.Sub(h.lastRestart) < restartCooldown {
+		return false
+	}
+	if forwarderDead {
+		return true
+	}
+	return h.everOnline && now.Sub(h.lastOnline) > unhealthyAfter
+}
+
 // Daemon is the running set of tailnets, queried by the control socket so the
 // CLI never has to spin up its own tsnet stacks (which would fight for state
 // locks, :53, and authkeys).
@@ -72,10 +106,14 @@ type Daemon struct {
 	appliedMu    sync.Mutex
 	appliedAt    time.Time
 	appliedMtime time.Time
+
+	// health is the self-heal watchdog's per-tailnet memory. Written only by
+	// healthWatch (one goroutine), so it needs no lock of its own.
+	health map[string]*tailnetHealth
 }
 
 func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
-	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, services: liveServices, tunRetries: map[string]bool{}}
+	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, services: liveServices, tunRetries: map[string]bool{}, health: map[string]*tailnetHealth{}}
 }
 
 // serviceList runs the swappable service discovery, tolerating a parked or
@@ -565,6 +603,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
 	mux.HandleFunc("POST /tailnet/{name}/clear", d.handleClear)
+	mux.HandleFunc("POST /tailnet/{name}/restart", d.handleRestart)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
 	mux.HandleFunc("POST /tailnet/{name}/hostname", d.handleHostname)
 	mux.HandleFunc("POST /tailnet/{name}/cidr", d.handleCIDR)
@@ -756,6 +795,97 @@ func (d *Daemon) handleApplied(w http.ResponseWriter, r *http.Request) {
 		out.AppliedAt = at.Format(time.RFC3339)
 	}
 	writeJSON(w, out)
+}
+
+// handleRestart stops and restarts one tailnet in place — the manual recovery
+// for a node a network outage left dark. Node state (and login) is kept.
+func (d *Daemon) handleRestart(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if d.tailnetByName(name) == nil {
+		if d.tailnetInConfig(name) {
+			writeErr(w, http.StatusConflict, "tailnet is in the config but not running — `reload` retries it")
+			return
+		}
+		writeErr(w, http.StatusNotFound, "no such tailnet (known: "+strings.Join(d.tailnetNames(), ", ")+")")
+		return
+	}
+	if err := d.restartTailnet(name); err != nil {
+		writeErr(w, http.StatusInternalServerError, "restart failed: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"ok": "tailnet restarted (node state kept — no re-login)"})
+}
+
+// healthWatch is the daemon's self-heal loop. tsnet normally reconnects on its
+// own after an outage, but a node can get stuck or its datapath can die; this
+// restarts such a tailnet in place so the host does not stay dark until a
+// manual restart.
+func (d *Daemon) healthWatch(ctx context.Context) {
+	tick := time.NewTicker(healthTick)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			d.checkHealth(ctx)
+		}
+	}
+}
+
+func (d *Daemon) checkHealth(ctx context.Context) {
+	for _, tn := range d.liveTailnets() {
+		if tn.lc == nil {
+			continue // test stub
+		}
+		online := false
+		if st, err := tn.lc.Status(ctx); err == nil && st.BackendState == "Running" && st.Self != nil {
+			online = st.Self.Online // connected to the control plane (map poll open)
+		}
+		now := time.Now()
+		h := d.health[tn.conf.Name]
+		if h == nil {
+			h = &tailnetHealth{}
+			d.health[tn.conf.Name] = h
+		}
+		if online {
+			h.lastOnline = now
+			h.everOnline = true
+		}
+		dead := tn.forwarderDead()
+		if !needsRestart(h, online, dead, now) {
+			continue
+		}
+		slog.Warn("tailnet unhealthy — restarting in place (node state kept, no re-login)",
+			"name", tn.conf.Name, "online", online, "forwarder_dead", dead,
+			"last_online", h.lastOnline.Format(time.RFC3339))
+		h.lastRestart = now
+		h.lastOnline = now // grace window for the restart to come up
+		if err := d.restartTailnet(tn.conf.Name); err != nil {
+			slog.Error("health restart failed", "name", tn.conf.Name, "err", err)
+		}
+	}
+}
+
+// restartTailnet stops and starts one tailnet in place, keeping its state dir
+// (and login). Serialized with config mutations through cfgMu.
+func (d *Daemon) restartTailnet(name string) error {
+	d.cfgMu.Lock()
+	defer d.cfgMu.Unlock()
+	d.mu.Lock()
+	tn := d.tailnetByName(name)
+	d.mu.Unlock()
+	if tn == nil {
+		return fmt.Errorf("tailnet %q is not running (use `reload` for a parked one)", name)
+	}
+	tc := tn.conf
+	slog.Info("restarting tailnet", "name", tc.Name, "tun", tc.TUN)
+	d.stopTailnet(tn)
+	if err := d.startOne(tc); err != nil {
+		return err
+	}
+	d.applySelections()
+	return nil
 }
 
 // handleClear unselects everything on a tailnet — resources emptied and

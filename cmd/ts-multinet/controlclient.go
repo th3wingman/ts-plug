@@ -527,6 +527,25 @@ func runReloadClient(c cliOpts) {
 	fmt.Println(res["ok"])
 }
 
+// runRestartClient stops and restarts one tailnet in place (node state, and
+// login, kept) — the manual recovery for a node a network outage left dark.
+func runRestartClient(c cliOpts, tailnet string) {
+	if tailnet == "" {
+		fmt.Fprintln(os.Stderr, "usage: ts-multinet restart <tailnet>")
+		os.Exit(1)
+	}
+	r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/restart", map[string]string{})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(r)
+		return
+	}
+	fmt.Println(r.OK)
+}
+
 // runHostnameClient sets the node name reported inside the tailnet (an
 // empty-string / "-" argument clears the override); with no argument it
 // prints the effective hostname.

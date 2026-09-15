@@ -135,6 +135,12 @@ func main() {
 			runLoginClient(cli, tailnet)
 		case "reload":
 			runReloadClient(cli)
+		case "restart":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: ts-multinet restart <tailnet>")
+				os.Exit(1)
+			}
+			runRestartClient(cli, args[1])
 		case "select", "forget":
 			if len(args) < 3 {
 				fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer> [peer...]\n", args[0])
@@ -276,6 +282,7 @@ func main() {
 
 	go daemon.serveControl(ctx, *flagSock)
 	go serveUI(ctx, daemon, orDefault(cfg.UIListen, "127.0.0.1:8123"))
+	go daemon.healthWatch(ctx) // self-heal a tailnet left dark by a network outage
 
 	// SIGHUP reloads the config file and syncs tailnets to it.
 	hup := make(chan os.Signal, 1)
@@ -305,6 +312,7 @@ usage:
   ts-multinet [flags] check <host[:port]>  diagnose one target end-to-end
   ts-multinet [flags] login [tailnet]  start browser login for a tailnet (or list what needs one)
   ts-multinet [flags] reload           re-read the config and apply it live — tailnets included
+  ts-multinet [flags] restart <tailnet>  stop/start one tailnet in place (state kept) — recovers a stuck node
   ts-multinet [flags] select <tailnet> <peer|svc:label>...   expose peers/services
   ts-multinet [flags] forget <tailnet> <peer|svc:label>...   stop exposing them
   ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
