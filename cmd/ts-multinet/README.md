@@ -145,17 +145,29 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
 ## Web UI
 
 The daemon serves a small control panel at **<http://127.0.0.1:8123>** (knob:
-`ui_listen`) — same API the CLI talks to, rendered for a browser:
+`ui_listen`) — same API the CLI talks to, rendered for a browser. Drill-down
+layout, hash routes:
 
-- per-tailnet cards: state, suffix, custom domain, login button (clickable
-  auth URL), allow-all toggle, remove button (node state kept)
-- add-tailnet form — cidr/tun/domain optional ("auto"), doubling as the
-  friendly empty state on a fresh install
-- peers tables with select checkboxes and probed services
-- effective config view, reload button (surfaces needs-restart notices)
+- **Overview** (`#/`) — read-only landing: daemon line, then one row per
+  tailnet (state, suffix, domain, hostname, node IP, peers up/total, selected,
+  DNS-registered dot). Click a row to drill in; nothing is editable here.
+- **Tailnet detail** (`#/tailnet/<name>`) — **Peers**: name/FQDN filter, a
+  200-row render cap with a "show all" toggle, per-row selection checkboxes,
+  and a **probe** button that is the *only* path that dials ports (the 5s poll
+  never does). **Settings** (`#/tailnet/<name>/settings`): domain, hostname,
+  allow-all, resource chips, plus structural **cidr/tun** — applying those
+  restarts just that tailnet (node state and login survive). Danger zone
+  removes the tailnet, keeping node state.
+- **Config** (`#/config`) — globals (`mtu`, `dns_listen`, `upstream_dns`,
+  `ui_listen`, `hosts_file`) with a needs-restart note on the ones that need
+  one, the add-tailnet form (cidr/tun/domain/hostname optional), and a
+  collapsible view of the effective config. `state_dir` is deliberately not
+  editable here — moving it orphans node state; edit the file if you mean it.
 
 It binds on localhost only, no auth: same trust model as the unix control
 socket (root-owned, local-only). Manage remotely over SSH port-forwarding.
+The daemon owns the config file — UI and CLI edits patch it in place through
+the HuJSON AST, so comments survive and hand edits still apply after `reload`.
 
 ## Host DNS (systemd-resolved)
 

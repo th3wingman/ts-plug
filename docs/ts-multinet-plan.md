@@ -40,6 +40,8 @@ systemd restarts; daemon owns the config file but manual edits survive.
 | Lifecycle | hostname kept on `add` (insert builder fix); stop cleans the tun route/addr before close; busy starts self-heal in the background (5–45s backoff); config-only mutations work on parked tailnets; sync start failures are a notice, not a 500 | `dc5b363` |
 | UX | parked tailnets (in config, not running) get "`reload` retries it" instead of "no such tailnet" | `110ad77` |
 | UX | short single-label domains (≤4 chars: dev, io, app…) warned at add, domain set, and start — they collide with public TLD space | `66041a4` |
+| UI | drill-down console: hash router, read-only Overview, per-tailnet detail (Peers filter/cap + click-only probing; Settings), Config page for globals + add; API additions `dns_registered` + `POST /config` (globals, comment-preserving, needs_restart) | `bd4d245`, `6627807` |
+| UI | structural **cidr/tun** endpoints (range/overlap + device-clash validation, works parked, applies via stop/start) wired into Settings; async TUN-retry nil-ctx panic fixed (found by the new tests) | `e718d69` |
 | Docs | plan status updates | `a837866` |
 | CLI | `--json` / `--details` flags on every command (raw replies, JSONL multi-peer, extended human forms); peers replies carry FQDN | `872c1c3` |
 | DNS hardening | routing domains set before the DNS server at registration; forwarder prefers real upstreams (`/run/systemd/resolve/resolv.conf`) over the resolved stub — no forwarding loop | `a593d09` |
@@ -121,9 +123,24 @@ Nothing — the CLI flags lane (`872c1c3`) and both DNS hardening pieces
    restart whenever (stopped here for a clean system — coexists by design).
 3. **PR** from `ts-plug/multinet-host-mode` (git hard gate: ask the user
    first; sample recent PR bodies first).
-4. **Web UI redesign** — plan below; implementation via subagent lanes A/B/C.
+4. **Web UI redesign** — ✅ implemented (`bd4d245`, `6627807`, `e718d69`);
+   remaining: the on-host walkthrough with the user (Overview, drill-down,
+   probe-on-demand via journal, Settings saves, Config restart badges) and the
+   loopback `POST /config` + `cidr/tun` smoke; then PR.
 
-## Web UI redesign — queued plan
+## Web UI redesign — implemented
+
+Lanes: A daemon (`bd4d245`), B UI (`6627807`), C wrap-up (`e718d69`). Design
+record below; deviations from the plan are noted at the end.
+
+**Deviations/notes**: `enabled` toggle still missing — no endpoint exists for
+toggling a tailnet's enabled flag, so it renders nowhere (would be a small
+`updateTailnet` addition); cidr/tun became editable (`e718d69`) after lane B
+correctly refused to invent endpoints; probe results are cached per poll cycle
+and the 5s poll never sends `ports=`; `views/shared.js` holds state+actions to
+keep the module graph acyclic (app → views → shared → api).
+
+### Original design record
 
 Approved design (plan-mode session, all three forks answered: drill-down IA,
 filter+cap peers, vanilla restructured). Implementation starts from commit
