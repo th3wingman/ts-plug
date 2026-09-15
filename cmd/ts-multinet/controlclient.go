@@ -569,6 +569,21 @@ func runRestartClient(c cliOpts, tailnet string) {
 	fmt.Println(r.OK)
 }
 
+// runEnabledClient flips a tailnet's enabled flag: disable stops the node
+// (state and login kept), enable starts it again — no unprovisioning.
+func runEnabledClient(c cliOpts, tailnet string, on bool) {
+	r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/enabled", map[string]bool{"on": on})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(r)
+		return
+	}
+	fmt.Println(r.OK)
+}
+
 // runHostnameClient sets the node name reported inside the tailnet (an
 // empty-string / "-" argument clears the override); with no argument it
 // prints the effective hostname.

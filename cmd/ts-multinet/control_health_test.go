@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +56,44 @@ func TestAuthKeyRestartsNeedsLogin(t *testing.T) {
 	}
 	if rec := doReq(t, d, "POST", "/tailnet/dev/authkey", `{}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty key = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+// The enabled toggle stops and starts a tailnet without unprovisioning: node
+// state (and login) is kept, so re-enabling starts it right back up. A
+// disabled tailnet stays visible in status as "disabled", not "gone".
+func TestEnabledToggle(t *testing.T) {
+	d, cfgPath := stubDaemon(t)
+	d.rt.ctx = context.Background()
+	d.rt.cleanupTUN = func(cidr, dev string) {}
+	var starts int
+	d.rt.starter = func(ctx context.Context, tc TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error) {
+		starts++
+		return &Tailnet{conf: tc, wg: &sync.WaitGroup{}}, nil
+	}
+
+	if rec := doReq(t, d, "POST", "/tailnet/dev/enabled", `{"on":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("disable = %d %s", rec.Code, rec.Body.String())
+	}
+	if d.tailnetByName("dev") != nil {
+		t.Fatal("disabled tailnet still live")
+	}
+	if tc := devConf(t, cfgPath); tc.Enabled == nil || *tc.Enabled {
+		t.Fatal("enabled=false not persisted")
+	}
+	rec := doReq(t, d, "GET", "/status", "")
+	if !strings.Contains(rec.Body.String(), `"state":"disabled"`) {
+		t.Fatalf("status missing the disabled entry: %s", rec.Body.String())
+	}
+
+	if rec := doReq(t, d, "POST", "/tailnet/dev/enabled", `{"on":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("enable = %d %s", rec.Code, rec.Body.String())
+	}
+	if starts != 1 {
+		t.Fatalf("re-enable started the node %d times, want 1", starts)
+	}
+	if d.tailnetByName("dev") == nil {
+		t.Fatal("re-enabled tailnet not live")
 	}
 }
 

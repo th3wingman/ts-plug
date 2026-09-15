@@ -111,6 +111,12 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   state_dir, hosts_file, ui_listen) need a service restart. Removing a
   tailnet keeps its node state; re-adding logs back in without a browser.
 
+- **Off/on without unprovisioning.** `sudo ts-multinet disable <tailnet>`
+  stops the node — state and login kept — and it shows as `disabled` in
+  `status` (distinct from `parked`, a failed start); `enable` starts it again
+  straight back to Running. Same as the `"enabled": false` config flag and
+  the Settings toggle; nothing about resources or node state is touched.
+
 - **Auth keys for tagged devices (optional).** Default is still one-time
   browser login: `ts-multinet login <tailnet>` (prints a URL); state persists
   under `state_dir` and survives restarts. For tagged / automation nodes,

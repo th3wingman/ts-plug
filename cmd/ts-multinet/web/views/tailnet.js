@@ -31,6 +31,7 @@ import {
   restartTailnet,
   setNativeDNS,
   setAuthKey,
+  setEnabled,
   probePeers,
   removeTailnet,
 } from "./shared.js";
@@ -640,6 +641,21 @@ function renderSettings(root, name, s, tc) {
 
   root.append(
     h("h3", { class: "section" }, "maintenance"),
+    h(
+      "div",
+      { class: "field" },
+      h("span", { class: "field__label" }, "enabled"),
+      h(
+        "label",
+        { class: "switch" },
+        h("input", {
+          type: "checkbox",
+          ...(tc.enabled !== false ? { checked: true } : {}),
+          onchange: (e) => setEnabled(name, e.target.checked),
+        }),
+        " off: node stopped, state and login kept",
+      ),
+    ),
     h(
       "div",
       { class: "field" },

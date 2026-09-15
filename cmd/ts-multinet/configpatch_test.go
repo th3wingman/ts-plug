@@ -121,6 +121,37 @@ func TestPatchAuthKey(t *testing.T) {
 	}
 }
 
+// enabled flips are mutable edits, not structural rewrites: comments on the
+// tailnet survive an off/on round-trip, and off returns to the default (member
+// removed, not "enabled": true hardcoded).
+func TestPatchEnabledPreservesComments(t *testing.T) {
+	path := testConfig(t)
+	prev := mustLoad(t, path)
+	next, err := cloneConfig(prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	confByName(next, "example").Enabled = &off
+	if err := patchConfigFile(path, prev, next); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	if tc := confByName(mustLoad(t, path), "example"); tc.Enabled == nil || *tc.Enabled {
+		t.Fatal("enabled=false not patched in")
+	}
+
+	cur := mustLoad(t, path)
+	back, _ := cloneConfig(cur)
+	confByName(back, "example").Enabled = nil
+	if err := patchConfigFile(path, cur, back); err != nil {
+		t.Fatal(err)
+	}
+	if tc := confByName(mustLoad(t, path), "example"); tc.Enabled != nil {
+		t.Fatalf("enabled not cleared back to default: %+v", tc.Enabled)
+	}
+}
+
 func TestPatchForgetReverses(t *testing.T) {
 	path := testConfig(t)
 	prev := mustLoad(t, path)

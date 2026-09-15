@@ -607,6 +607,7 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
 	mux.HandleFunc("POST /tailnet/{name}/native-dns", d.handleNativeDNS)
 	mux.HandleFunc("POST /tailnet/{name}/authkey", d.handleAuthKey)
+	mux.HandleFunc("POST /tailnet/{name}/enabled", d.handleEnabled)
 	mux.HandleFunc("POST /tailnet/{name}/clear", d.handleClear)
 	mux.HandleFunc("POST /tailnet/{name}/restart", d.handleRestart)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
@@ -669,6 +670,26 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out = append(out, ts)
+	}
+	// Config-only tailnets (parked after a failed start, or explicitly
+	// disabled) must stay visible: "off" has to be distinguishable from
+	// "gone", and the UI needs an entry to re-enable from.
+	live := make(map[string]bool, len(out))
+	for _, ts := range out {
+		live[strings.ToLower(ts.Name)] = true
+	}
+	if cfg, err := loadConfig(d.cfgPath); err == nil {
+		for i := range cfg.Tailnets {
+			tc := &cfg.Tailnets[i]
+			if live[strings.ToLower(tc.Name)] {
+				continue
+			}
+			state := "parked"
+			if !tc.enabled() {
+				state = "disabled"
+			}
+			out = append(out, tailnetStatusJSON{Name: tc.Name, CIDR: tc.CIDR, Hostname: tc.nodeHostname(), State: state})
+		}
 	}
 	writeJSON(w, out)
 }
@@ -1440,6 +1461,27 @@ func (d *Daemon) handleAuthKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]string{"ok": notice + " — the key is stored server-side and never displayed again"})
+}
+
+// handleEnabled turns a tailnet off/on without unprovisioning anything: off
+// stops the node (state dir and login kept — re-enabling goes straight back
+// to Running), on starts it again. This is the config's `enabled` flag,
+// exposed as a toggle; disabled tailnets stay visible in /status as
+// "disabled" (vs "parked" = failed start).
+func (d *Daemon) handleEnabled(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.On == nil {
+			return clientError{"body must be {\"on\": true|false}"}
+		}
+		on := *req.On
+		tc.Enabled = &on
+		return nil
+	}, func(req selectionReq) string {
+		if req.On != nil && *req.On {
+			return "tailnet enabled — starting with kept node state"
+		}
+		return "tailnet disabled — node stopped, state and login kept"
+	})
 }
 
 // handleNativeDNS toggles whether this tailnet's native MagicDNS name

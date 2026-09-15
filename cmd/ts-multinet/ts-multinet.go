@@ -151,6 +151,18 @@ func main() {
 				os.Exit(1)
 			}
 			runRestartClient(cli, args[1])
+		case "enable":
+			if len(args) != 2 {
+				fmt.Fprintln(os.Stderr, "usage: ts-multinet enable <tailnet>")
+				os.Exit(1)
+			}
+			runEnabledClient(cli, args[1], true)
+		case "disable":
+			if len(args) != 2 {
+				fmt.Fprintln(os.Stderr, "usage: ts-multinet disable <tailnet>")
+				os.Exit(1)
+			}
+			runEnabledClient(cli, args[1], false)
 		case "select", "forget":
 			if len(args) < 3 {
 				fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer> [peer...]\n", args[0])
@@ -332,6 +344,8 @@ usage:
   ts-multinet [flags] add <name> [cidr tun]         add a tailnet live (cidr/tun auto-picked when omitted)
   ts-multinet [flags] login <tailnet> [authkey]     with a key: tagged enrollment, no browser; without: prints a login URL
   ts-multinet [flags] remove <name>                 stop a tailnet and drop it from config (node state kept)
+  ts-multinet [flags] enable <tailnet>              start a disabled tailnet (node state kept — no re-login)
+  ts-multinet [flags] disable <tailnet>             stop a tailnet without unprovisioning (state kept)
 
 (every verb above talks to the running daemon over its control socket; only a
 bare "ts-multinet" invocation runs the daemon itself. Config edits — tailnets

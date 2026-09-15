@@ -332,6 +332,23 @@ export async function setAuthKey(name, key) {
   refresh();
 }
 
+// setEnabled turns a tailnet off/on without unprovisioning: off stops the
+// node (state and login kept), on starts it again.
+export async function setEnabled(name, on) {
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/enabled`, {
+      on,
+    });
+    msg(name, {
+      kind: "ok",
+      text: res.ok || (on ? "tailnet enabled" : "tailnet disabled"),
+    });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
 // probePeers fetches one tailnet's peers WITH the port list — the only path
 // that probes; results are cached per peer name until the next probe.
 export async function probePeers(name) {

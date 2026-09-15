@@ -61,10 +61,9 @@ func patchConfigFile(path string, prev, next *Config) error {
 		case o == nil:
 			insertTailnetElement(arr, *n)
 		case o.CIDR != n.CIDR || o.TUN != n.TUN || o.Suffix != n.Suffix ||
-			(o.Enabled == nil) != (n.Enabled == nil) || o.Enabled != nil && n.Enabled != nil && *o.Enabled != *n.Enabled ||
 			o.StateDir != n.StateDir:
-			// Anything structural rewrites the whole element; only the three
-			// mutable keys below are worth preserving comments on.
+			// Anything structural rewrites the whole element; only the mutable
+			// keys below are worth preserving comments on.
 			removeTailnetElement(arr, n.Name)
 			insertTailnetElement(arr, *n)
 		default:
@@ -105,6 +104,13 @@ func patchConfigFile(path string, prev, next *Config) error {
 					removeMember(obj, "auth_key")
 				} else {
 					setMember(obj, "auth_key", hujson.String(n.AuthKey))
+				}
+			}
+			if (o.Enabled == nil) != (n.Enabled == nil) || (o.Enabled != nil && n.Enabled != nil && *o.Enabled != *n.Enabled) {
+				if n.Enabled == nil {
+					removeMember(obj, "enabled")
+				} else {
+					setMember(obj, "enabled", hujson.Bool(*n.Enabled))
 				}
 			}
 			if !slices.Equal(o.Resources, n.Resources) {
