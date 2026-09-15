@@ -69,7 +69,9 @@ export function renderTailnet(root, name, tab) {
     ),
   );
 
-  // header: identity + the one action that belongs to a not-yet-running node
+  // header: identity + the one action that belongs to a node waiting for
+  // login (a disabled tailnet is off on purpose — the Settings toggle
+  // re-enables it; a parked one needs a retry, not a login)
   const head = h(
     "div",
     { class: "detail__head" },
@@ -78,7 +80,7 @@ export function renderTailnet(root, name, tab) {
     h("span", { class: "hint" }, `hostname ${s?.hostname || hostnameOf(tc)}`),
     h("span", { class: "hint" }, `our ip ${s?.assigned_ip || "—"}`),
   );
-  if (!s || s.state !== "Running") {
+  if (!s || s.state === "NeedsLogin") {
     head.append(
       h(
         "button",
@@ -181,13 +183,13 @@ function renderPeers(root, name, s, tc) {
     }
 
     if (!shown.length) {
-      const note = !tp
-        ? "status unavailable"
-        : tp.suffix
+      const note = tp
+        ? tp.suffix
           ? filter
             ? "no peers match the filter"
             : "no peers"
-          : "no peers — still detecting the tailnet suffix";
+          : "no peers — still detecting the tailnet suffix"
+        : "status unavailable";
       tbody.append(
         h("tr", {}, h("td", { colspan: "7", class: "empty" }, note)),
       );
@@ -294,7 +296,7 @@ function renderPeers(root, name, s, tc) {
       h("p", { class: "hint" }, "allow-all is on — every peer is selected"),
     );
   }
-  if (!s || s.state !== "Running") {
+  if (!s || s.state === "NeedsLogin" || s.state === "parked") {
     root.append(
       h(
         "p",
@@ -380,11 +382,11 @@ function renderServices(root, name, s, tc) {
     }
 
     if (!hit.length) {
-      const note = !tp
-        ? "services unavailable"
-        : services.length
+      const note = tp
+        ? services.length
           ? "no services match the filter"
-          : "no advertised services visible — service visibility is ACL-gated on the tailnet";
+          : "no advertised services visible — service visibility is ACL-gated on the tailnet"
+        : "services unavailable";
       tbody.append(
         h("tr", {}, h("td", { colspan: "5", class: "empty" }, note)),
       );
@@ -443,7 +445,7 @@ function renderServices(root, name, s, tc) {
       ),
     );
   }
-  if (!s || s.state !== "Running") {
+  if (!s || s.state === "NeedsLogin" || s.state === "parked") {
     root.append(
       h(
         "p",
@@ -650,7 +652,7 @@ function renderSettings(root, name, s, tc) {
         { class: "switch" },
         h("input", {
           type: "checkbox",
-          ...(tc.enabled !== false ? { checked: true } : {}),
+          ...(tc.enabled === false ? {} : { checked: true }),
           onchange: (e) => setEnabled(name, e.target.checked),
         }),
         " off: node stopped, state and login kept",

@@ -22,7 +22,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font:
-    14px / 1.5 system-ui,
+    15px / 1.5 system-ui,
     -apple-system,
     "Segoe UI",
     sans-serif;
@@ -79,7 +79,7 @@ a:hover {
 }
 .topbar__msg {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 main {
@@ -112,7 +112,7 @@ main {
 }
 .btn--small {
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .btn--danger {
   color: var(--err);
@@ -124,7 +124,7 @@ main {
 /* badges, dots, messages */
 
 .badge {
-  font-size: 12px;
+  font-size: 13px;
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--border);
@@ -162,7 +162,7 @@ main {
 
 .msg {
   margin: 10px 0;
-  font-size: 13px;
+  font-size: 14px;
 }
 .msg--ok {
   color: var(--ok);
@@ -176,7 +176,7 @@ main {
 
 .hint {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 .empty {
   color: var(--muted);
@@ -191,7 +191,7 @@ code {
   border-radius: 4px;
   padding: 1px 5px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* overview */
@@ -226,7 +226,7 @@ code {
   min-width: 190px;
 }
 .row__name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
 }
 .row__facts {
@@ -239,14 +239,14 @@ code {
   display: flex;
   gap: 6px;
   align-items: baseline;
-  font-size: 13px;
+  font-size: 14px;
 }
 .fact__label {
   color: var(--muted);
 }
 .fact__value {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
 }
 .row__side {
   display: flex;
@@ -260,7 +260,7 @@ code {
 }
 .row__chev {
   color: var(--muted);
-  font-size: 18px;
+  font-size: 19px;
 }
 
 /* tailnet detail */
@@ -273,7 +273,7 @@ code {
   margin-bottom: 10px;
 }
 .detail__name {
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 700;
 }
 
@@ -322,7 +322,7 @@ code {
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
 }
 th,
 td {
@@ -358,12 +358,12 @@ tbody tr:hover {
 }
 .panel h2 {
   margin: 0 0 12px;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .section {
   margin: 22px 0 10px;
-  font-size: 14px;
+  font-size: 15px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--muted);
@@ -384,7 +384,7 @@ tbody tr:hover {
 .field__label {
   color: var(--muted);
   min-width: 130px;
-  font-size: 13px;
+  font-size: 14px;
 }
 .field__control {
   display: flex;
@@ -395,7 +395,7 @@ tbody tr:hover {
 }
 .field__value {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
   overflow-wrap: anywhere;
 }
 .input {
@@ -405,7 +405,7 @@ tbody tr:hover {
   color: var(--text);
   padding: 5px 10px;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
   flex: 1 1 12ch;
   min-width: 0;
 }
@@ -439,14 +439,14 @@ tbody tr:hover {
   border-radius: 999px;
   padding: 2px 4px 2px 10px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
 }
 .chip__x {
   background: none;
   border: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
   padding: 0 4px;
 }
@@ -464,7 +464,7 @@ details.panel pre {
   border-radius: 8px;
   padding: 14px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   overflow-x: auto;
   margin: 12px 0 0;
 }
