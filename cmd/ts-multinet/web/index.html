@@ -14,21 +14,17 @@
   </div>
 
   <header class="topbar">
-    <span class="topbar__title">ts-multinet</span>
-    <nav class="tabs" id="tabs">
-      <button class="tabs__btn is-active" data-view="dashboard" type="button">Dashboard</button>
-      <button class="tabs__btn" data-view="peers" type="button">Peers</button>
-      <button class="tabs__btn" data-view="config" type="button">Config</button>
+    <a class="topbar__title" href="#/">ts-multinet</a>
+    <nav class="topbar__nav">
+      <a class="topbar__link" href="#/">Overview</a>
+      <a class="topbar__link" href="#/config">Config</a>
     </nav>
+    <span class="topbar__spacer"></span>
     <button id="reload-btn" class="btn" type="button">Reload</button>
     <span id="reload-msg" class="topbar__msg"></span>
   </header>
 
-  <main>
-    <section id="view-dashboard" class="view"></section>
-    <section id="view-peers" class="view" hidden></section>
-    <section id="view-config" class="view" hidden></section>
-  </main>
+  <main id="app"></main>
 
   <script type="module" src="./app.js"></script>
 </body>
