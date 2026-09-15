@@ -202,9 +202,16 @@ func (d *Daemon) spawnTUNRetry(tc TailnetConf) {
 			delete(d.tunRetries, tc.Name)
 			d.mu.Unlock()
 		}()
+		// nil-safe lifetime: a nil rt.ctx (tests, or a daemon built without
+		// one) must not panic in the goroutine — a nil channel simply never
+		// fires, so the retry still honours config/ctx removal below.
+		var lifetime <-chan struct{}
+		if d.rt.ctx != nil {
+			lifetime = d.rt.ctx.Done()
+		}
 		for _, wait := range tunRetryBackoff {
 			select {
-			case <-d.rt.ctx.Done():
+			case <-lifetime:
 				return
 			case <-time.After(wait):
 			}
@@ -531,6 +538,8 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
 	mux.HandleFunc("POST /tailnet/{name}/hostname", d.handleHostname)
+	mux.HandleFunc("POST /tailnet/{name}/cidr", d.handleCIDR)
+	mux.HandleFunc("POST /tailnet/{name}/tun", d.handleTUN)
 	mux.HandleFunc("POST /tailnet", d.handleAddTailnet)
 	mux.HandleFunc("DELETE /tailnet/{name}", d.handleRemoveTailnet)
 	return mux
@@ -1087,6 +1096,81 @@ func validDomain(s string) bool {
 	return len(s) <= 253 && domainRE.MatchString(s)
 }
 
+// structuralReq is the body of the structural field edits (cidr/tun).
+type structuralReq struct {
+	CIDR string `json:"cidr"`
+	TUN  string `json:"tun"`
+}
+
+// updateStructural runs a structural (stop/start) tailnet edit: cidr and tun
+// need the whole config for overlap/clash checks, so unlike updateTailnet this
+// goes straight through applyConfigUpdate. Works on parked tailnets too.
+func (d *Daemon) updateStructural(w http.ResponseWriter, r *http.Request, okMsg string, fn func(*Config, *TailnetConf, structuralReq) error) {
+	name := r.PathValue("name")
+	var req structuralReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	notice, err := d.applyConfigUpdate(func(c *Config) error {
+		tc := confByName(c, name)
+		if tc == nil {
+			return clientError{fmt.Sprintf("no such tailnet %q", name)}
+		}
+		return fn(c, tc, req)
+	})
+	if err != nil {
+		var ce clientError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusBadRequest, ce.msg)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok := okMsg + "; the tailnet restarts to apply it (node state and login kept)"
+	if notice != "" {
+		ok += "; " + notice
+	}
+	writeJSON(w, map[string]string{"ok": ok})
+}
+
+// handleCIDR changes a tailnet's synthetic range (must stay inside
+// 198.18.0.0/15 and not overlap another tailnet).
+func (d *Daemon) handleCIDR(w http.ResponseWriter, r *http.Request) {
+	d.updateStructural(w, r, "cidr updated", func(c *Config, tc *TailnetConf, req structuralReq) error {
+		if req.CIDR == "" {
+			return clientError{"cidr is required"}
+		}
+		if tc.CIDR == req.CIDR {
+			return nil // no-op: keep it idempotent
+		}
+		if err := checkCIDR(req.CIDR, c, tc.Name); err != nil {
+			return clientError{err.Error()}
+		}
+		tc.CIDR = req.CIDR
+		return nil
+	})
+}
+
+// handleTUN changes a tailnet's TUN device name (IFNAMSIZ limit, no clash
+// with another configured tailnet).
+func (d *Daemon) handleTUN(w http.ResponseWriter, r *http.Request) {
+	d.updateStructural(w, r, "tun updated", func(c *Config, tc *TailnetConf, req structuralReq) error {
+		if req.TUN == "" {
+			return clientError{"tun is required"}
+		}
+		if tc.TUN == req.TUN {
+			return nil
+		}
+		if err := checkTUN(req.TUN, c, tc.Name); err != nil {
+			return clientError{err.Error()}
+		}
+		tc.TUN = req.TUN
+		return nil
+	})
+}
+
 // tldWarning flags friendly domains that collide with public TLD space: a
 // single label of ≤4 chars (dev, app, io, ai, sh, me, tv, so, to, co…) is
 // very likely a real gTLD. With the alias fall-through, unknown names under
@@ -1182,7 +1266,7 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 			if cidr, err = nextFreeCIDR(cfg); err != nil {
 				return TailnetConf{}, clientError{err.Error()}
 			}
-		} else if err := checkCIDR(cidr, cfg); err != nil {
+		} else if err := checkCIDR(cidr, cfg, ""); err != nil {
 			return TailnetConf{}, clientError{err.Error()}
 		}
 		tun := req.TUN
@@ -1287,7 +1371,7 @@ func mustCIDR(s string) *net.IPNet {
 
 // checkCIDR validates a user-supplied cidr: IPv4, inside the synthetic range,
 // and not overlapping any configured tailnet's range.
-func checkCIDR(cidr string, cfg *Config) error {
+func checkCIDR(cidr string, cfg *Config, exclude string) error {
 	ip, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil || ip.To4() == nil {
 		return fmt.Errorf("invalid IPv4 cidr %q", cidr)
@@ -1296,8 +1380,28 @@ func checkCIDR(cidr string, cfg *Config) error {
 		return fmt.Errorf("cidr %s is outside the synthetic range 198.18.0.0/15", cidr)
 	}
 	for _, tc := range cfg.Tailnets {
+		if exclude != "" && strings.EqualFold(tc.Name, exclude) {
+			continue // editing a tailnet: its own range is not an overlap
+		}
 		if _, used, err := net.ParseCIDR(tc.CIDR); err == nil && (used.Contains(ipnet.IP) || ipnet.Contains(used.IP)) {
 			return fmt.Errorf("cidr %s overlaps tailnet %q (%s)", cidr, tc.Name, tc.CIDR)
+		}
+	}
+	return nil
+}
+
+// checkTUN validates a device name: the kernel's IFNAMSIZ limit and no clash
+// with another configured tailnet (exclude is the tailnet being edited).
+func checkTUN(tun string, cfg *Config, exclude string) error {
+	if tun == "" || len(tun) > 15 {
+		return fmt.Errorf("tun name %q must be 1-15 chars", tun)
+	}
+	for _, tc := range cfg.Tailnets {
+		if exclude != "" && strings.EqualFold(tc.Name, exclude) {
+			continue
+		}
+		if strings.EqualFold(tc.TUN, tun) {
+			return fmt.Errorf("tun %q is already used by tailnet %q", tun, tc.Name)
 		}
 	}
 	return nil
@@ -1308,7 +1412,7 @@ func checkCIDR(cidr string, cfg *Config) error {
 func nextFreeCIDR(cfg *Config) (string, error) {
 	probe := &net.IPNet{IP: net.IPv4(198, 18, 1, 0).To4(), Mask: net.CIDRMask(24, 32)}
 	for i := 0; i < 512; i++ { // 198.18.1.0 .. 198.19.255.0 minus the broadcast-ish edges
-		if err := checkCIDR(probe.String(), cfg); err == nil {
+		if err := checkCIDR(probe.String(), cfg, ""); err == nil {
 			return probe.String(), nil
 		}
 		probe.IP[2]++

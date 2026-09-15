@@ -22,6 +22,8 @@ import {
   doLogin,
   setDomain,
   setHostname,
+  setCIDR,
+  setTUN,
   setAllowAll,
   togglePeer,
   forgetPeer,
@@ -360,13 +362,29 @@ function renderSettings(root, name, s, tc) {
   );
 
   root.append(
-    h("h3", { class: "section" }, "routing (file config)"),
-    infoRow("cidr", s?.cidr || tc.cidr),
-    infoRow("tun", tc.tun),
+    h("h3", { class: "section" }, "routing"),
+    fieldRow(
+      "cidr",
+      textInput(s?.cidr || tc.cidr, { class: "input" }),
+      (e) => {
+        const input = e.target.closest(".field__control").querySelector("input");
+        setCIDR(name, input.value);
+      },
+      { note: "synthetic range inside 198.18.0.0/15, no overlap with other tailnets" },
+    ),
+    fieldRow(
+      "tun",
+      textInput(tc.tun, { class: "input" }),
+      (e) => {
+        const input = e.target.closest(".field__control").querySelector("input");
+        setTUN(name, input.value);
+      },
+      { note: "TUN device name, 1-15 chars" },
+    ),
     h(
       "p",
       { class: "hint" },
-      "cidr and tun are structural: edit the config file and press Reload. Changing them stops and restarts this tailnet — node state is kept, so no new login.",
+      "cidr and tun are structural: applying them stops and restarts this tailnet — node state is kept, so no new login.",
     ),
   );
 

@@ -160,6 +160,33 @@ export async function setDomain(name, value) {
   refresh();
 }
 
+// setCIDR/setTUN are structural: the daemon stops and restarts the tailnet to
+// apply them (node state and login survive), so the server's ok text is the
+// user-visible contract here.
+export async function setCIDR(name, value) {
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/cidr`, {
+      cidr: value.trim(),
+    });
+    msg(name, { kind: "info", text: res.ok || "cidr updated" });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
+export async function setTUN(name, value) {
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/tun`, {
+      tun: value.trim(),
+    });
+    msg(name, { kind: "info", text: res.ok || "tun updated" });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
 export async function setHostname(name, value) {
   try {
     await post(`/tailnet/${encodeURIComponent(name)}/hostname`, {
