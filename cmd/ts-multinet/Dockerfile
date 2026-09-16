@@ -16,7 +16,7 @@ RUN apk add --no-cache \
     bash curl wget bind-tools iputils netcat-openbsd tcpdump jq less
 
 COPY --from=build /out/ts-multinet /usr/local/bin/ts-multinet
-COPY cmd/ts-multinet/config.example.json /etc/ts-multinet/config.json
+COPY cmd/ts-multinet/config.example.jsonc /etc/ts-multinet/config.json
 
 # Daemon needs --cap-add NET_ADMIN --device /dev/net/tun at runtime.
 # Subcommands append cleanly: `docker run ... ts-multinet peers`.

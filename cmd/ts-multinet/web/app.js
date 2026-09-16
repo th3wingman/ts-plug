@@ -1,0 +1,90 @@
+// app.js — the UI shell: hash router, 5s polling, and the topbar wiring.
+// Views live in views/ (overview, tailnet detail, config) and pull shared
+// state/actions from views/shared.js.
+
+import {
+  $,
+  refresh,
+  reloadDaemon,
+  setRerender,
+  POLL_MS,
+} from "./views/shared.js";
+import { renderOverview } from "./views/overview.js";
+import { renderTailnet } from "./views/tailnet.js";
+import { renderConfig } from "./views/config.js";
+
+const app = $("#app");
+
+// parseRoute maps the hash to a view + params. Unknown shapes fall back to
+// the overview rather than rendering nothing.
+function parseRoute() {
+  const raw = (location.hash || "").replace(/^#\/?/, "").replace(/\/+$/, "");
+  if (!raw) return { view: "overview" };
+  const parts = raw.split("/");
+  if (parts[0] === "config") return { view: "config" };
+  if (parts[0] === "tailnet" && parts[1]) {
+    const tab = ["settings", "services"].includes(parts[2])
+      ? parts[2]
+      : "peers";
+    return {
+      view: "tailnet",
+      name: decodeURIComponent(parts[1]),
+      tab,
+    };
+  }
+  return { view: "overview" };
+}
+
+// renderCurrent paints the routed view and reports whether it actually
+// painted: a view declines while an input has focus, and refresh() uses that
+// to know whether its data is on screen yet.
+function renderCurrent() {
+  const r = parseRoute();
+  document.title =
+    r.view === "tailnet" ? `${r.name} — ts-multinet` : "ts-multinet";
+  if (r.view === "config") {
+    renderConfig(app);
+    return true;
+  }
+  if (r.view === "tailnet") return renderTailnet(app, r.name, r.tab);
+  renderOverview(app);
+  return true;
+}
+
+// rerenderView keeps the reading position across a repaint. Replacing the
+// view recreates .table-wrap (which owns the table's scroll) and can clamp the
+// window scroll — capture both and put them back. Row-only updates call
+// renderRows() directly and never come through here.
+function rerenderView() {
+  const y = window.scrollY;
+  const wrap = $(".table-wrap");
+  const top = wrap ? wrap.scrollTop : 0;
+  if (!renderCurrent()) return false;
+  window.scrollTo(0, y);
+  const next = $(".table-wrap");
+  if (next) next.scrollTop = top;
+  return true;
+}
+
+setRerender(rerenderView);
+
+$("#reload-btn").addEventListener("click", reloadDaemon);
+window.addEventListener("hashchange", renderCurrent);
+
+// Enter in a field saves it (the old cards behaved this way) — pick the
+// sibling save button of the same field, if it has one.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !e.target.matches("input.input")) return;
+  const save = e.target.closest(".field")?.querySelector("button");
+  if (save) {
+    e.preventDefault();
+    save.click();
+  }
+});
+
+// First paint paints before data lands: refresh() re-renders when it does.
+renderCurrent();
+refresh();
+setInterval(() => {
+  if (!document.hidden) refresh();
+}, POLL_MS);

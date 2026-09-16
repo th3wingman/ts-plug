@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,19 +25,24 @@ import (
 // identifies both the tailnet and the original name.
 type registry struct {
 	mu        sync.Mutex
-	entries   []*tnEntry            // per tailnet
-	byName    map[string]net.IP     // real fqdn -> synthetic IP
-	byIP      map[string]string     // synthetic IP string -> real fqdn
-	cidrs     []*net.IPNet          // all synthetic ranges, for loop guard
+	entries   []*tnEntry             // per tailnet
+	byName    map[string]net.IP      // real fqdn -> synthetic IP
+	byIP      map[string]string      // synthetic IP string -> real fqdn
+	cidrs     []*net.IPNet           // all synthetic ranges, for loop guard
 	resolvers map[string]resolveFunc // tailnet -> peer-list resolver (existence check)
 }
 
 type tnEntry struct {
-	name   string // friendly name, e.g. "skynet" — also accepted as an alias suffix
-	suffix string // real MagicDNS suffix, e.g. "tail523555.ts.net"; "" until detected
+	name   string     // friendly name, e.g. "skynet" — also accepted as an alias suffix
+	domain string     // friendly DNS suffix, e.g. "skynet" or a custom "lan"; defaults to name
+	suffix string     // real MagicDNS suffix, e.g. "tail523555.ts.net"; "" until detected
+	ipnet  *net.IPNet // the synthetic range, so removal can scrub exactly this tailnet's IPs
 	alloc  *allocator
 }
 
+// newRegistry builds an empty registry plus entries for the given tailnets —
+// the startup convenience; runtime adds go through add/remove as tailnets
+// start and stop (syncTailnets uses the same path).
 func newRegistry(tailnets []TailnetConf) (*registry, error) {
 	r := &registry{
 		byName:    make(map[string]net.IP),
@@ -44,20 +50,72 @@ func newRegistry(tailnets []TailnetConf) (*registry, error) {
 		resolvers: make(map[string]resolveFunc),
 	}
 	for _, tc := range tailnets {
-		a, err := newAllocator(tc.CIDR)
-		if err != nil {
-			return nil, fmt.Errorf("tailnet %q: %w", tc.Name, err)
+		if err := r.add(tc); err != nil {
+			return nil, err
 		}
-		if _, ipnet, err := net.ParseCIDR(tc.CIDR); err == nil {
-			r.cidrs = append(r.cidrs, ipnet)
-		}
-		r.entries = append(r.entries, &tnEntry{
-			name:   strings.ToLower(tc.Name),
-			suffix: strings.TrimSuffix(strings.ToLower(tc.Suffix), "."),
-			alloc:  a,
-		})
 	}
 	return r, nil
+}
+
+// add registers a tailnet's synthetic range for DNS matching and IP
+// allocation. Starting a tailnet adds its entry; stopping removes it, so a
+// duplicate name is an error, not an upsert.
+func (r *registry) add(tc TailnetConf) error {
+	a, err := newAllocator(tc.CIDR)
+	if err != nil {
+		return fmt.Errorf("tailnet %q: %w", tc.Name, err)
+	}
+	_, ipnet, err := net.ParseCIDR(tc.CIDR)
+	if err != nil {
+		return fmt.Errorf("tailnet %q: %w", tc.Name, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := strings.ToLower(tc.Name)
+	for _, e := range r.entries {
+		if e.name == name {
+			return fmt.Errorf("tailnet %q is already registered", tc.Name)
+		}
+	}
+	r.entries = append(r.entries, &tnEntry{
+		name:   name,
+		domain: strings.ToLower(tc.domainName()),
+		suffix: strings.TrimSuffix(strings.ToLower(tc.Suffix), "."),
+		ipnet:  ipnet,
+		alloc:  a,
+	})
+	r.cidrs = append(r.cidrs, ipnet)
+	return nil
+}
+
+// remove drops a tailnet entirely: entry, resolver, cidr guard, and every
+// synthetic IP it allocated (stale hosts-block or resolver caches can't be
+// re-pointed at a different tailnet's hosts by a later re-add of the range).
+func (r *registry) remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name = strings.ToLower(name)
+	var gone *net.IPNet
+	entries := r.entries[:0]
+	for _, e := range r.entries {
+		if e.name == name {
+			gone = e.ipnet
+			continue
+		}
+		entries = append(entries, e)
+	}
+	r.entries = entries
+	if gone == nil {
+		return
+	}
+	r.cidrs = slices.DeleteFunc(r.cidrs, func(n *net.IPNet) bool { return n.String() == gone.String() })
+	delete(r.resolvers, name)
+	for ipStr, fqdn := range r.byIP {
+		if gone.Contains(net.ParseIP(ipStr)) {
+			delete(r.byIP, ipStr)
+			delete(r.byName, fqdn)
+		}
+	}
 }
 
 // registerSuffix records the real MagicDNS suffix for a tailnet, typically
@@ -77,6 +135,23 @@ func (r *registry) registerSuffix(tailnet, suffix string) {
 	}
 }
 
+// registerDomain updates the friendly DNS suffix (config domain edits land
+// here via the tailnet watcher's conf re-read).
+func (r *registry) registerDomain(tailnet, domain string) {
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	if domain == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.name == strings.ToLower(tailnet) {
+			e.domain = domain
+			return
+		}
+	}
+}
+
 // registerResolver wires a tailnet's peer-list resolver so DNS can verify a
 // host actually exists before answering (NXDOMAIN otherwise → search fallthrough).
 func (r *registry) registerResolver(tailnet string, fn resolveFunc) {
@@ -87,36 +162,51 @@ func (r *registry) registerResolver(tailnet string, fn resolveFunc) {
 
 // match resolves a queried name to its tailnet and canonical real FQDN. It
 // accepts the real MagicDNS suffix (host.tail523555.ts.net) and the friendly
-// alias (host.skynet -> host.tail523555.ts.net). Longest match wins.
-func (r *registry) match(name string) (tailnet, realFQDN string, ok bool) {
+// aliases (host.skynet / host.<domain> -> host.tail523555.ts.net). Longest
+// match wins. authoritative reports whether the match was the real MagicDNS
+// suffix (our namespace — unknown hosts are NXDOMAIN) or a friendly alias
+// (host.<name/domain> — unknown hosts fall through to the public upstream,
+// since an alias like "dev" is also a real public TLD).
+func (r *registry) match(name string) (tailnet, realFQDN string, authoritative, ok bool) {
 	name = strings.TrimSuffix(strings.ToLower(name), ".")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	bestLen := -1
+	// alias maps name under sfx (the tailnet name or its custom domain) to
+	// the canonical MagicDNS spelling.
+	alias := func(e *tnEntry, sfx string) {
+		if sfx == "" || e.suffix == "" {
+			return
+		}
+		if name != sfx && !strings.HasSuffix(name, "."+sfx) {
+			return
+		}
+		short := strings.TrimSuffix(name, "."+sfx)
+		if short == name { // name == sfx exactly
+			short = ""
+		}
+		real := e.suffix
+		if short != "" {
+			real = short + "." + e.suffix
+		}
+		if len(sfx) > bestLen {
+			bestLen, tailnet, realFQDN, authoritative, ok = len(sfx), e.name, real, false, true
+		}
+	}
 	for _, e := range r.entries {
 		// Real suffix: the name is already canonical.
 		if e.suffix != "" && (name == e.suffix || strings.HasSuffix(name, "."+e.suffix)) {
 			if len(e.suffix) > bestLen {
-				bestLen, tailnet, realFQDN, ok = len(e.suffix), e.name, name, true
+				bestLen, tailnet, realFQDN, authoritative, ok = len(e.suffix), e.name, name, true, true
 			}
 		}
-		// Friendly alias: only once we know the real suffix to canonicalize to.
-		if e.suffix != "" && (name == e.name || strings.HasSuffix(name, "."+e.name)) {
-			short := strings.TrimSuffix(name, "."+e.name)
-			if short == name { // name == e.name exactly
-				short = ""
-			}
-			real := e.suffix
-			if short != "" {
-				real = short + "." + e.suffix
-			}
-			if len(e.name) > bestLen {
-				bestLen, tailnet, realFQDN, ok = len(e.name), e.name, real, true
-			}
+		alias(e, e.name)
+		if e.domain != e.name {
+			alias(e, e.domain)
 		}
 	}
-	return tailnet, realFQDN, ok
+	return tailnet, realFQDN, authoritative, ok
 }
 
 // exists checks whether realFQDN is a real peer on the tailnet. If no resolver
@@ -137,7 +227,7 @@ func (r *registry) exists(ctx context.Context, tailnet, realFQDN string) bool {
 // gets the raw arg with no search-list expansion). Bare names are tried against
 // each tailnet in config order; first existing wins.
 func (r *registry) locate(ctx context.Context, name string) (tailnet, realFQDN string, ok bool) {
-	if t, real, m := r.match(name); m {
+	if t, real, _, m := r.match(name); m {
 		if r.exists(ctx, t, real) {
 			return t, real, true
 		}
@@ -186,6 +276,15 @@ func (r *registry) allocate(tailnet, realFQDN string) (net.IP, bool) {
 	r.byName[realFQDN] = ip
 	r.byIP[ip.String()] = realFQDN
 	return ip, true
+}
+
+// seed pre-allocates synthetic IPs for a tailnet's selection in the given
+// order (callers pass sorted FQDNs) so hosts-block IPs are stable across
+// daemon restarts. Idempotent per name.
+func (r *registry) seed(tailnet string, fqdns []string) {
+	for _, f := range fqdns {
+		_, _ = r.allocate(tailnet, f)
+	}
 }
 
 // isSynthetic reports whether ip falls in any tailnet's synthetic range.
@@ -260,33 +359,39 @@ func (d *dnsServer) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 	q := req.Question[0]
 
-	if tailnet, realFQDN, mine := d.reg.match(q.Name); mine {
-		m := new(dns.Msg)
-		m.SetReply(req)
-		m.Authoritative = true
-
-		// Only answer if the host is a real peer. NXDOMAIN otherwise, so a
-		// resolver walking its search list falls through to the next tailnet.
+	if tailnet, realFQDN, auth, mine := d.reg.match(q.Name); mine {
+		// Only answer if the host is a real peer. A miss under the real
+		// MagicDNS suffix is NXDOMAIN (our namespace); a miss under a friendly
+		// alias (host.<name/domain>) falls through to the public upstream — an
+		// alias like "dev" is also a real gTLD, and pi.dev must keep resolving.
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if !d.reg.exists(ctx, tailnet, realFQDN) {
-			m.Rcode = dns.RcodeNameError // NXDOMAIN
+			if auth {
+				m := new(dns.Msg)
+				m.SetReply(req)
+				m.Authoritative = true
+				m.Rcode = dns.RcodeNameError
+				_ = w.WriteMsg(m)
+				return
+			}
+		} else {
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.Authoritative = true
+			// A is synthesized; AAAA (and anything else) returns empty NOERROR so
+			// resolvers fall back to the A record.
+			if q.Qtype == dns.TypeA {
+				if ip, ok := d.reg.allocate(tailnet, realFQDN); ok {
+					rr, err := dns.NewRR(fmt.Sprintf("%s 1 IN A %s", q.Name, ip.String()))
+					if err == nil {
+						m.Answer = append(m.Answer, rr)
+					}
+				}
+			}
 			_ = w.WriteMsg(m)
 			return
 		}
-
-		// A is synthesized; AAAA (and anything else) returns empty NOERROR so
-		// resolvers fall back to the A record.
-		if q.Qtype == dns.TypeA {
-			if ip, ok := d.reg.allocate(tailnet, realFQDN); ok {
-				rr, err := dns.NewRR(fmt.Sprintf("%s 1 IN A %s", q.Name, ip.String()))
-				if err == nil {
-					m.Answer = append(m.Answer, rr)
-				}
-			}
-		}
-		_ = w.WriteMsg(m)
-		return
 	}
 
 	resp, _, err := d.client.Exchange(req, d.upstream)
@@ -301,10 +406,16 @@ func startDNS(listen string, ds *dnsServer) error {
 	if listen == "" {
 		listen = "127.0.0.1:53"
 	}
-	srv := &dns.Server{Addr: listen, Net: "udp", Handler: ds}
+	// Bind synchronously so a conflict (e.g. dnsmasq on 127.0.0.1:53) reaches
+	// the caller; ListenAndServe-in-a-goroutine would only log it on the side.
+	conn, err := net.ListenPacket("udp", listen)
+	if err != nil {
+		return err
+	}
+	srv := &dns.Server{PacketConn: conn, Handler: ds}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			slog.Error("dns ListenAndServe", "err", err)
+		if err := srv.ActivateAndServe(); err != nil {
+			slog.Error("dns serve", "err", err)
 		}
 	}()
 	return nil
