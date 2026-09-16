@@ -134,6 +134,13 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   renamed or replaced peer under the same name fails loudly instead of
   silently redirecting (delete the pin in `<state_dir>/<tailnet>/selections.json`
   to re-select).
+- **Locked essentials** — `locked` pins a subset of `resources` (the
+  jumpboxes, logging, metrics you must not lose): a locked selection stays
+  selected through `clear`/clear-all, refuses `forget`, and blocks
+  `disable`/`remove` of the tailnet carrying it. `sudo ts-multinet
+  lock/unlock <tailnet> <peer|svc:label>`, or the lock button on a row in
+  the UI. Locking also selects; unlocking keeps the selection — forget is
+  the separate step.
 - **Advertised services** — Tailscale `svc:<label>` VIP services are
   selectable alongside peers: `resources` accepts `svc:<label>` (or
   `sudo ts-multinet select <tailnet> svc:<label>`, or the UI's **Services**
@@ -351,6 +358,8 @@ docker exec tsm ts-multinet reload              # after editing selection config
 sudo ts-multinet restart skynet                 # stop/start one node in place (state kept) — outage recovery
 sudo ts-multinet select skynet rpi4-sk-01       # expose a peer (patches the config in place)
 sudo ts-multinet select skynet svc:my-db        # expose an advertised service too
+sudo ts-multinet lock skynet rpi4-sk-01         # pin an essential: survives clear-all, blocks disable
+sudo ts-multinet unlock skynet rpi4-sk-01        # release the pin (still selected until forgotten)
 sudo ts-multinet --json status | jq '.[] | select(.state=="Running")'
 sudo ts-multinet -details peers dev              # FQDN column + services
 sudo ts-multinet --json check nucbox.skynet:22   # raw fields for scripting

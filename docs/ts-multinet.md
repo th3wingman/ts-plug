@@ -96,7 +96,7 @@ The daemon serves a JSON API over a unix socket
 (`/run/ts-multinet/control.sock`) and, on the host, the same API + an embedded
 web UI on a localhost TCP listener (default `127.0.0.1:8123`, knob
 `ui_listen`). `status` / `peers` / `check` / `login` / `reload` /
-`select` / `forget` / `allow-all` / `domain` / `config` are thin clients that
+`select` / `forget` / `lock` / `unlock` / `allow-all` / `domain` / `config` are thin clients that
 query the **running daemon** — they never spin up their own tsnet stacks
 (which would collide on state locks, `:53`, and authkeys). The mutating verbs
 patch the config file in place via the hujson AST (`configpatch.go`), so
@@ -183,6 +183,7 @@ make ts-multinet                     # builds build/ts-multinet (go + module cac
 go vet ./cmd/ts-multinet
 go test ./cmd/ts-multinet -count=1   # unit tests: dns domains, config patching, web mux, ...
 ./scripts/install-ts-multinet.sh --help
+make install-ts-multinet             # same installer via make: builds, installs, restarts
 ```
 
 The host-mode daemon needs root (TUNs, routes, `/etc/hosts`, `resolvectl`) —

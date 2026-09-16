@@ -603,6 +603,8 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /login", d.handleLogin)
 	mux.HandleFunc("POST /reload", d.handleReload)
 	mux.HandleFunc("POST /tailnet/{name}/select", d.handleSelect)
+	mux.HandleFunc("POST /tailnet/{name}/select-all", d.handleSelectAll)
+	mux.HandleFunc("POST /tailnet/{name}/lock", d.handleLock)
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
 	mux.HandleFunc("POST /tailnet/{name}/native-dns", d.handleNativeDNS)
@@ -778,7 +780,7 @@ func (d *Daemon) handleServices(w http.ResponseWriter, r *http.Request) {
 				DisplayName: orDefault(sd.DisplayName, name),
 				VIPs:        vips,
 				Ports:       ports,
-				Selected:    slices.Contains(conf.Resources, name),
+				Selected:    slices.Contains(conf.Resources, name) || slices.Contains(conf.Locked, name),
 			})
 		}
 		out = append(out, ts)
@@ -963,14 +965,23 @@ func (d *Daemon) restartTailnet(name string) error {
 	return nil
 }
 
-// handleClear unselects everything on a tailnet — resources emptied and
-// allow_all off in one comment-preserving write.
+// handleClear unselects everything on a tailnet — except locked essentials,
+// which survive the clear (they are the always-on infra) and stay selected.
+// allow_all goes off too, in one comment-preserving write.
 func (d *Daemon) handleClear(w http.ResponseWriter, r *http.Request) {
+	// fn runs before note, so the closure can carry what was kept.
+	var kept []string
 	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
-		tc.Resources = nil
+		kept = append(kept[:0], tc.Locked...)
+		tc.Resources = kept
 		tc.AllowAll = false
 		return nil
-	}, nil)
+	}, func(req selectionReq) string {
+		if len(kept) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("kept %d locked (%s)", len(kept), strings.Join(kept, ", "))
+	})
 }
 
 func (d *Daemon) handleCheck(w http.ResponseWriter, r *http.Request) {
@@ -1275,10 +1286,11 @@ func validUpstreamDNS(s string) bool {
 // selectionReq is the shared body of the mutation endpoints (each uses the
 // field it needs; the rest must be absent or zero).
 type selectionReq struct {
-	Peer     string `json:"peer"`
-	On       *bool  `json:"on"`
-	Domain   string `json:"domain"`
-	Hostname string `json:"hostname"`
+	Peer      string   `json:"peer"`
+	On        *bool    `json:"on"`
+	Domain    string   `json:"domain"`
+	Hostname  string   `json:"hostname"`
+	Resources []string `json:"resources"` // select-all: the whole set to add
 }
 
 // clientError marks a request-level problem (unknown peer, bad domain) so
@@ -1381,16 +1393,98 @@ func (d *Daemon) handleSelect(w http.ResponseWriter, r *http.Request) {
 	}, nil)
 }
 
+// handleSelectAll adds a whole set of resources in one comment-preserving
+// write — the UI's "select all". Entries validate exactly like /select
+// (services must be advertised, peers must be live). allow_all is cleared so
+// an existing select-everything config becomes an explicit list the user can
+// then uncheck row by row.
+func (d *Daemon) handleSelectAll(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, true, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if len(req.Resources) == 0 {
+			return clientError{"resources is required"}
+		}
+		var svcs map[tailcfg.ServiceName]tailcfg.ServiceDetails
+		for _, name := range req.Resources {
+			if isServiceResource(name) {
+				if svcs == nil {
+					var err error
+					if svcs, err = d.serviceList(r.Context(), d.tailnetByName(tc.Name)); err != nil {
+						return clientError{fmt.Sprintf("advertised services unavailable on %s: %v", tc.Name, err)}
+					}
+				}
+				if _, ok := svcs[tailcfg.ServiceName(name)]; !ok {
+					return clientError{fmt.Sprintf("unknown service %q (services: %s)", name, strings.Join(serviceNames(svcs), ", "))}
+				}
+			} else if !slices.Contains(peers, name) {
+				return clientError{fmt.Sprintf("unknown peer %q (peers: %s)", name, strings.Join(peers, ", "))}
+			}
+			if !slices.Contains(tc.Resources, name) {
+				tc.Resources = append(tc.Resources, name)
+			}
+		}
+		tc.AllowAll = false
+		return nil
+	}, nil)
+}
+
 // handleForget removes a peer from resources (any name — stale entries can
-// be cleaned up even when the peer is gone).
+// be cleaned up even when the peer is gone) — except locked essentials,
+// which must be unlocked first so an accidental click can't drop them.
 func (d *Daemon) handleForget(w http.ResponseWriter, r *http.Request) {
 	d.updateTailnet(w, r, true, func(req selectionReq, tc *TailnetConf, peers []string) error {
 		if req.Peer == "" {
 			return clientError{"peer is required"}
 		}
+		if slices.Contains(tc.Locked, req.Peer) {
+			return clientError{req.Peer + " is locked — unlock it first (`ts-multinet unlock " + tc.Name + " " + req.Peer + "`"}
+		}
 		tc.Resources = slices.DeleteFunc(tc.Resources, func(s string) bool { return s == req.Peer })
 		return nil
 	}, nil)
+}
+
+// handleLock pins (or releases) one selection as an essential: locked
+// selections survive clear-all and block disabling or removing the tailnet.
+// Locking also selects (every daemon write keeps locked ⊆ resources);
+// unlocking releases the pin but keeps the selection — forget is separate.
+func (d *Daemon) handleLock(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, true, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.Peer == "" {
+			return clientError{"peer is required"}
+		}
+		if req.On == nil {
+			return clientError{"body must be {\"peer\": \"...\", \"on\": true|false}"}
+		}
+		if !*req.On {
+			tc.Locked = slices.DeleteFunc(tc.Locked, func(s string) bool { return s == req.Peer })
+			return nil
+		}
+		// locking validates exactly like select: a live peer or an advertised
+		// service — no pinning names that can't resolve
+		if isServiceResource(req.Peer) {
+			svcs, err := d.serviceList(r.Context(), d.tailnetByName(tc.Name))
+			if err != nil {
+				return clientError{fmt.Sprintf("advertised services unavailable on %s: %v", tc.Name, err)}
+			}
+			if _, ok := svcs[tailcfg.ServiceName(req.Peer)]; !ok {
+				return clientError{fmt.Sprintf("unknown service %q (services: %s)", req.Peer, strings.Join(serviceNames(svcs), ", "))}
+			}
+		} else if !slices.Contains(peers, req.Peer) {
+			return clientError{fmt.Sprintf("unknown peer %q (peers: %s)", req.Peer, strings.Join(peers, ", "))}
+		}
+		if !slices.Contains(tc.Resources, req.Peer) {
+			tc.Resources = append(tc.Resources, req.Peer)
+		}
+		if !slices.Contains(tc.Locked, req.Peer) {
+			tc.Locked = append(tc.Locked, req.Peer)
+		}
+		return nil
+	}, func(req selectionReq) string {
+		if req.On != nil && *req.On {
+			return req.Peer + " locked — survives clear-all, blocks disabling the tailnet"
+		}
+		return req.Peer + " unlocked — still selected; forget unselects it"
+	})
 }
 
 // handleAllowAll toggles selecting every non-Mullvad peer.
@@ -1474,6 +1568,11 @@ func (d *Daemon) handleEnabled(w http.ResponseWriter, r *http.Request) {
 			return clientError{"body must be {\"on\": true|false}"}
 		}
 		on := *req.On
+		// locked essentials ride this tailnet: disabling it would drop them,
+		// so the disable is refused until they're unlocked
+		if !on && len(tc.Locked) > 0 {
+			return clientError{fmt.Sprintf("tailnet has locked selections (%s) — unlock them first (`ts-multinet unlock %s <name>`)", strings.Join(tc.Locked, ", "), tc.Name)}
+		}
 		tc.Enabled = &on
 		return nil
 	}, func(req selectionReq) string {
@@ -1772,6 +1871,12 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 // is a manual rm.
 func (d *Daemon) handleRemoveTailnet(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// locked essentials block removal the same way they block disable — the
+	// whole tailnet (config, hosts entries, DNS) going away is the bigger loss
+	if tc := d.confFor(name); len(tc.Locked) > 0 {
+		writeErr(w, http.StatusConflict, fmt.Sprintf("tailnet %q has locked selections (%s) — unlock them first", name, strings.Join(tc.Locked, ", ")))
+		return
+	}
 	if _, err := func() (*TailnetConf, error) {
 		d.cfgMu.Lock()
 		defer d.cfgMu.Unlock()

@@ -124,6 +124,17 @@ func patchConfigFile(path string, prev, next *Config) error {
 					setMember(obj, "resources", &hujson.Array{Elements: els})
 				}
 			}
+			if !slices.Equal(o.Locked, n.Locked) {
+				if len(n.Locked) == 0 {
+					removeMember(obj, "locked")
+				} else {
+					els := make([]hujson.ArrayElement, len(n.Locked))
+					for j, r := range n.Locked {
+						els[j] = hujson.Value{Value: hujson.String(r)}
+					}
+					setMember(obj, "locked", &hujson.Array{Elements: els})
+				}
+			}
 		}
 	}
 
@@ -209,7 +220,8 @@ func configsEqual(a, b *Config) bool {
 		if x.Name != y.Name || x.Suffix != y.Suffix || x.Domain != y.Domain ||
 			x.Hostname != y.Hostname ||
 			x.CIDR != y.CIDR || x.TUN != y.TUN || x.AllowAll != y.AllowAll ||
-			x.StateDir != y.StateDir || !slices.Equal(x.Resources, y.Resources) {
+			x.StateDir != y.StateDir || !slices.Equal(x.Resources, y.Resources) ||
+			!slices.Equal(x.Locked, y.Locked) {
 			return false
 		}
 		if (x.Enabled == nil) != (y.Enabled == nil) || x.Enabled != nil && *x.Enabled != *y.Enabled {
@@ -328,6 +340,13 @@ func insertTailnetElement(arr *hujson.Array, tc TailnetConf) {
 			els[j] = hujson.Value{Value: hujson.String(r)}
 		}
 		addMember("resources", &hujson.Array{Elements: els})
+	}
+	if len(tc.Locked) > 0 {
+		els := make([]hujson.ArrayElement, len(tc.Locked))
+		for j, r := range tc.Locked {
+			els[j] = hujson.Value{Value: hujson.String(r)}
+		}
+		addMember("locked", &hujson.Array{Elements: els})
 	}
 	obj.AfterExtra = hujson.Extra("\n    ")
 	arr.Elements = append(arr.Elements, hujson.Value{BeforeExtra: hujson.Extra("\n    "), Value: obj})

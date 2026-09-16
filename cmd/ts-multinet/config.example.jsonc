@@ -52,6 +52,9 @@
     //   //                              // (shared Mullvad exit nodes are never selectable)
     //   // "resources": ["host1", "host2"],  // short names exactly as `peers` shows them;
     //   //                                   // usually managed via `select`/`forget` or the web UI
+    //   // "locked": ["jumpbox"],         // pinned essentials ⊆ resources: survive clear-all,
+    //   //                              // refuse forget, and block disabling/removing the
+    //   //                              // tailnet — jumpboxes, logging, metrics; unlock to release
     //   // "native_dns": true,           // also list the native MagicDNS name (host.<suffix>)
     //   //                               // on the /etc/hosts line, so shell completion
     //   //                               // offers both spellings; DNS resolves either

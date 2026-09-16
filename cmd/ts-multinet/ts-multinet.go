@@ -49,6 +49,7 @@ type TailnetConf struct {
 	Enabled   *bool    `json:"enabled,omitempty"`    // default true
 	AllowAll  bool     `json:"allow_all,omitempty"`  // select every non-Mullvad peer instead of listing resources
 	Resources []string `json:"resources,omitempty"`  // short names to select (hosts entries + synthetic IPs)
+	Locked    []string `json:"locked,omitempty"`     // pinned essentials ⊆ resources: survive clear-all, block disable/remove
 	NativeDNS bool     `json:"native_dns,omitempty"` // also list the native MagicDNS name in the hosts block (completion); DNS resolution is unaffected
 	StateDir  string   `json:"state_dir,omitempty"`
 }
@@ -169,6 +170,12 @@ func main() {
 				os.Exit(1)
 			}
 			runSelectForgetClient(cli, args[1], args[0], args[2:])
+		case "lock", "unlock":
+			if len(args) < 3 {
+				fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer|svc:label> [name...]\n", args[0])
+				os.Exit(1)
+			}
+			runLockClient(cli, args[1], args[0] == "lock", args[2:])
 		case "allow-all":
 			tailnet, arg := "", ""
 			if len(args) >= 2 {
@@ -337,6 +344,8 @@ usage:
   ts-multinet [flags] restart <tailnet>  stop/start one tailnet in place (state kept) — recovers a stuck node
   ts-multinet [flags] select <tailnet> <peer|svc:label>...   expose peers/services
   ts-multinet [flags] forget <tailnet> <peer|svc:label>...   stop exposing them
+  ts-multinet [flags] lock <tailnet> <peer|svc:label>...    pin essentials: survive clear-all, block disable
+  ts-multinet [flags] unlock <tailnet> <peer|svc:label>...  release a pin (the selection stays)
   ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
   ts-multinet [flags] domain <tailnet> [name|-]     set (or print) the friendly DNS suffix; - clears it
   ts-multinet [flags] hostname <tailnet> [name|-]   set (or print) the node name in the tailnet; - clears it

@@ -659,6 +659,29 @@ func runSelectForgetClient(c cliOpts, tailnet, verb string, peers []string) {
 	}
 }
 
+// runLockClient drives lock/unlock: one POST per name, stopping at the
+// first failure like select/forget. Locking pins an essential (survives
+// clear-all, blocks disabling the tailnet); unlocking releases the pin but
+// keeps the selection — forget is the separate step.
+func runLockClient(c cliOpts, tailnet string, lock bool, names []string) {
+	if tailnet == "" || len(names) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: ts-multinet %s <tailnet> <peer|svc:label> [name...]\n", map[bool]string{true: "lock", false: "unlock"}[lock])
+		os.Exit(1)
+	}
+	for _, p := range names {
+		r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/lock", map[string]any{"peer": p, "on": lock})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if c.json {
+			emitJSON(r) // JSONL, same as multi-peer select/forget
+			continue
+		}
+		fmt.Printf("%s %s\n", map[bool]string{true: "lock", false: "unlock"}[lock], p)
+	}
+}
+
 // parseOnOff maps an optional on/off argument; absent means on.
 func parseOnOff(s string) (bool, error) {
 	switch strings.ToLower(s) {

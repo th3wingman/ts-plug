@@ -13,6 +13,7 @@ import {
   domainOf,
   hostnameOf,
   stateBadge,
+  dnsDot,
   msgEl,
   fieldRow,
   textInput,
@@ -25,6 +26,9 @@ import {
   setCIDR,
   setTUN,
   setAllowAll,
+  selectAll,
+  setLock,
+  testHost,
   togglePeer,
   forgetPeer,
   clearSelections,
@@ -62,8 +66,149 @@ const SVC_COLS = [
   ["ports", "ports"],
 ];
 
+// --- connectivity -------------------------------------------------------------
+
+// testCell adds a per-row "test" button plus its result span. The probe writes
+// only into that span — no shared state — so testing a row never re-renders (or
+// scroll-resets) the table the user is reading.
+function testCell(cell, host, port) {
+  const out = h("span", { class: "test-result" });
+  const btn = h(
+    "button",
+    {
+      class: "btn btn--tiny",
+      type: "button",
+      title: `resolve and dial ${host}:${port}`,
+      onclick: async (e) => {
+        const b = e.currentTarget;
+        b.disabled = true;
+        out.className = "test-result";
+        out.textContent = "testing…";
+        out.title = "";
+        try {
+          const r = await testHost(host, port);
+          out.textContent = checkLabel(r, port);
+          out.className = "test-result test-result--" + checkClass(r);
+          out.title = r.detail || "";
+        } catch (err) {
+          out.textContent = "error";
+          out.className = "test-result test-result--err";
+          out.title = err.message;
+        }
+        b.disabled = false;
+      },
+    },
+    "test",
+  );
+  cell.append(btn, out);
+}
+
+// lockCell adds the per-row pin toggle: a locked essential survives
+// clear-all and blocks disabling the tailnet (jumpboxes, logging, metrics).
+// Unlocking releases the pin; unselecting stays a separate, deliberate click.
+function lockCell(cell, name, resource, locked) {
+  cell.append(
+    h(
+      "button",
+      {
+        class: "btn btn--tiny",
+        type: "button",
+        title: locked
+          ? "unlock — releases the pin; the selection stays until forgotten"
+          : "lock — pin as an essential: survives clear-all, blocks disabling the tailnet",
+        onclick: () => setLock(name, resource, !locked),
+      },
+      locked ? "🔒 unlock" : "lock",
+    ),
+  );
+}
+
+// checkClass maps a /check result to a colour: open is the only success.
+const checkClass = (r) =>
+  r.result === "open" ? "ok" : r.result === "unreachable" ? "err" : "warn";
+
+// checkLabel names the port actually dialled, so an unreachable verdict is
+// never ambiguous about what was tried.
+const checkLabel = (r, port) =>
+  r.result === "open"
+    ? `open :${port} · ${r.latency_ms}ms`
+    : (r.result || "error").replace(/_/g, " ");
+
+// rowHost/rowPort pick what a peer's test dials: its MagicDNS fqdn, on the
+// first port `probe ports` found (or a previously-returned service), else 80.
+const rowHost = (p, s) => p.fqdn || p.name + "." + (s?.suffix || "");
+const rowPort = (name, p) =>
+  state.probed[name]?.[p.name]?.[0] ?? p.services?.[0] ?? 80;
+
+// svcHost/svcPort do the same for a service, which is addressed by its
+// MagicDNS label rather than its VIP (registry.locate resolves names, not IPs).
+const svcHost = (svc, s, tc) =>
+  svc.name.replace(/^svc:/i, "") + "." + (s?.suffix || domainOf(tc));
+const svcPort = (svc) => {
+  const m = String((svc.ports || [])[0] || "").match(/\d+/);
+  return m ? Number(m[0]) : 80;
+};
+
+// --- health strip -------------------------------------------------------------
+
+const dnsLabel = (reg) =>
+  reg === true ? "registered" : reg === false ? "hosts block only" : "unknown";
+
+const fact = (label, value) =>
+  h(
+    "span",
+    { class: "fact" },
+    h("span", { class: "fact__label" }, label),
+    h("span", { class: "fact__value" }, value),
+  );
+
+// statsStrip is the at-a-glance health line above the tabs: what the daemon
+// reports about this tailnet, so "it works" is visible instead of assumed.
+// `selected` pairs the live hosts-block count with the configured one — a gap
+// between them is the drift worth seeing.
+function statsStrip(s, tc, name) {
+  if (!s) {
+    return h(
+      "div",
+      { class: "stats" },
+      h("span", { class: "hint" }, "no live status — the node is not running"),
+    );
+  }
+  const advertised =
+    state.services.find((x) => x.name === name)?.services?.length || 0;
+  const configured = (tc.resources || []).length;
+  const live = s.selected ?? 0;
+  // DNS and the hosts block only exist for a running node: report them
+  // neutrally otherwise rather than crying wolf about \"not registered\".
+  const running = s.state === "Running";
+  const reg = running ? s.dns_registered : undefined;
+  const stale = running && configured > 0 && live < configured;
+  return h(
+    "div",
+    { class: "stats" },
+    fact("dns", h("span", {}, dnsDot(reg), dnsLabel(reg))),
+    fact("peers", `${s.up ?? 0}/${s.peers ?? 0} up`),
+    fact("services", String(advertised)),
+    h(
+      "span",
+      { class: "fact" + (stale ? " is-stale" : "") },
+      h("span", { class: "fact__label" }, "selected"),
+      h(
+        "span",
+        {
+          class: "fact__value",
+          title: stale
+            ? `${configured - live} configured resource(s) are not in the hosts block`
+            : "",
+        },
+        `${live}/${configured}`,
+      ),
+    ),
+  );
+}
+
 export function renderTailnet(root, name, tab) {
-  if (skipSection("detail-body")) return; // don't stomp a focused input
+  if (skipSection("detail-body")) return false; // don't stomp a focused input
 
   const s = state.status.find((x) => x.name === name) || null;
   const tc = confFor(name);
@@ -79,7 +224,7 @@ export function renderTailnet(root, name, tab) {
         h("a", { class: "btn", href: "#/" }, "back to overview"),
       ),
     );
-    return;
+    return true;
   }
 
   root.append(
@@ -121,6 +266,8 @@ export function renderTailnet(root, name, tab) {
   const msg = msgEl(state.msgs[name]);
   if (msg) root.append(msg);
 
+  root.append(statsStrip(s, tc, name));
+
   root.append(
     h(
       "nav",
@@ -147,6 +294,7 @@ export function renderTailnet(root, name, tab) {
   if (activeTab === "settings") renderSettings(body, name, s, tc);
   else if (activeTab === "services") renderServices(body, name, s, tc);
   else renderPeers(body, name, s, tc);
+  return true;
 }
 
 // --- peers --------------------------------------------------------------------
@@ -154,21 +302,25 @@ export function renderTailnet(root, name, tab) {
 function renderPeers(root, name, s, tc) {
   const tp = state.peers.find((p) => p.name === name);
   const peers = tp?.peers || [];
-  const selected = new Set(tc.resources || []);
+  const locked = new Set(tc.locked || []);
+  // locked essentials are always selected — the union also covers a
+  // hand-edited config that lists a lock without the matching resource
+  const selected = new Set([...(tc.resources || []), ...(tc.locked || [])]);
 
   const count = h("span", { class: "hint" });
   const tbody = h("tbody");
   const theadRow = h("tr", {}); // rebuilt per render — column visibility can change
 
-  const filter = state.peerFilter[name] || "";
-  const matches = (p) =>
-    !filter ||
-    (p.name || "").toLowerCase().includes(filter) ||
-    (p.fqdn || "").toLowerCase().includes(filter);
-
   const renderRows = () => {
     const cols = peerCols();
     const span = 1 + PEER_COLS.filter(([k]) => cols[k]).length;
+    // read the filter here, not once at render time: the search box updates
+    // state and calls renderRows(), so a closed-over value would never see it
+    const filter = state.peerFilter[name] || "";
+    const matches = (p) =>
+      !filter ||
+      (p.name || "").toLowerCase().includes(filter) ||
+      (p.fqdn || "").toLowerCase().includes(filter);
     theadRow.replaceChildren(
       h("th", {}),
       ...PEER_COLS.filter(([k]) => cols[k]).map(([k, label]) =>
@@ -189,21 +341,28 @@ function renderPeers(root, name, s, tc) {
             disabled: true,
             title: "allow-all selects every peer",
           })
-        : h("input", {
-            type: "checkbox",
-            "aria-label": "select " + p.name,
-            ...(selected.has(p.name) ? { checked: true } : {}),
-            onchange: (e) => togglePeer(name, p.name, e.target.checked),
-          });
+        : locked.has(p.name)
+          ? h("input", {
+              type: "checkbox",
+              checked: true,
+              disabled: true,
+              title: "locked — unlock to unselect",
+              "aria-label": "select " + p.name,
+            })
+          : h("input", {
+              type: "checkbox",
+              "aria-label": "select " + p.name,
+              ...(selected.has(p.name) ? { checked: true } : {}),
+              onchange: (e) => togglePeer(name, p.name, e.target.checked),
+            });
       const services =
         (state.probed[name]?.[p.name] || p.services || [])
           .map((x) => ":" + x)
           .join(" ") || "—";
-      const row = h(
-        "tr",
-        { class: p.online ? "" : "is-down" },
-        h("td", {}, box),
-      );
+      const cell = h("td", {}, box);
+      lockCell(cell, name, p.name, locked.has(p.name));
+      testCell(cell, rowHost(p, s), rowPort(name, p));
+      const row = h("tr", { class: p.online ? "" : "is-down" }, cell);
       if (cols.name) row.append(h("td", {}, p.name || "(unnamed)"));
       if (cols.fqdn) row.append(h("td", { class: "col-fqdn" }, p.fqdn || "—"));
       if (cols.ip) row.append(h("td", {}, p.ip || "—"));
@@ -248,14 +407,15 @@ function renderPeers(root, name, s, tc) {
         ),
       );
     }
-    count.textContent = `${hit.length} shown · ${tp?.up ?? 0} up of ${peers.length}`;
+    const sel = peers.filter((p) => selected.has(p.name)).length;
+    count.textContent = `${hit.length} shown · ${sel} selected · ${tp?.up ?? 0} up of ${peers.length}`;
   };
 
   const search = h("input", {
     class: "search",
     placeholder: "filter by name or fqdn",
     spellcheck: "false",
-    value: filter,
+    value: state.peerFilter[name] || "",
     "aria-label": "filter peers",
     oninput: (e) => {
       state.peerFilter[name] = e.target.value.trim().toLowerCase();
@@ -334,7 +494,19 @@ function renderPeers(root, name, s, tc) {
         {
           class: "btn btn--small",
           type: "button",
-          title: "unselect every peer and service on this tailnet",
+          disabled: !peers.length,
+          title:
+            "select every peer on this tailnet, filter ignored (turns allow-all off)",
+          onclick: () => selectAll(name, peers.map((p) => p.name)),
+        },
+        `select all ${peers.length}`,
+      ),
+      h(
+        "button",
+        {
+          class: "btn btn--small",
+          type: "button",
+          title: "unselect every unlocked peer and service on this tailnet (locked essentials are kept)",
           onclick: () => clearSelections(name),
         },
         "clear all",
@@ -380,20 +552,22 @@ function renderPeers(root, name, s, tc) {
 function renderServices(root, name, s, tc) {
   const tp = state.services.find((x) => x.name === name);
   const services = tp?.services || [];
-  const selected = new Set(tc.resources || []);
+  const locked = new Set(tc.locked || []);
+  // same union as renderPeers: locked essentials count as selected
+  const selected = new Set([...(tc.resources || []), ...(tc.locked || [])]);
   const tbody = h("tbody");
   const count = h("span", { class: "hint" });
   const theadRow = h("tr", {}); // rebuilt per render — column visibility can change
 
-  const filter = state.svcFilter[name] || "";
-  const matches = (svc) =>
-    !filter ||
-    (svc.name || "").toLowerCase().includes(filter) ||
-    (svc.display_name || "").toLowerCase().includes(filter);
-
   const renderRows = () => {
     const cols = svcCols();
     const span = 1 + SVC_COLS.filter(([k]) => cols[k]).length;
+    // fresh read, same reason as renderPeers — the search box calls renderRows
+    const filter = state.svcFilter[name] || "";
+    const matches = (svc) =>
+      !filter ||
+      (svc.name || "").toLowerCase().includes(filter) ||
+      (svc.display_name || "").toLowerCase().includes(filter);
     theadRow.replaceChildren(
       h("th", {}),
       ...SVC_COLS.filter(([k]) => cols[k]).map(([, label]) =>
@@ -411,18 +585,27 @@ function renderServices(root, name, s, tc) {
             disabled: true,
             title: "allow-all selects every peer",
           })
-        : h("input", {
-            type: "checkbox",
-            "aria-label": "select " + svc.name,
-            ...(selected.has(svc.name) ? { checked: true } : {}),
-            onchange: (e) => togglePeer(name, svc.name, e.target.checked),
-          });
-      const row = h("tr", {}, h("td", {}, box));
+        : locked.has(svc.name)
+          ? h("input", {
+              type: "checkbox",
+              checked: true,
+              disabled: true,
+              title: "locked — unlock to unselect",
+              "aria-label": "select " + svc.name,
+            })
+          : h("input", {
+              type: "checkbox",
+              "aria-label": "select " + svc.name,
+              ...(selected.has(svc.name) ? { checked: true } : {}),
+              onchange: (e) => togglePeer(name, svc.name, e.target.checked),
+            });
+      const cell = h("td", {}, box);
+      lockCell(cell, name, svc.name, locked.has(svc.name));
+      testCell(cell, svcHost(svc, s, tc), svcPort(svc));
+      const row = h("tr", {}, cell);
       if (cols.name) row.append(h("td", {}, svc.name || "(unnamed)"));
-      if (cols.display)
-        row.append(h("td", {}, svc.display_name || "—"));
-      if (cols.vip)
-        row.append(h("td", {}, (svc.vips || []).join(", ") || "—"));
+      if (cols.display) row.append(h("td", {}, svc.display_name || "—"));
+      if (cols.vip) row.append(h("td", {}, (svc.vips || []).join(", ") || "—"));
       if (cols.ports)
         row.append(h("td", {}, (svc.ports || []).join(" ") || "—"));
       tbody.append(row);
@@ -446,7 +629,7 @@ function renderServices(root, name, s, tc) {
     class: "search",
     placeholder: "filter by name or display name",
     spellcheck: "false",
-    value: filter,
+    value: state.svcFilter[name] || "",
     "aria-label": "filter services",
     oninput: (e) => {
       state.svcFilter[name] = e.target.value.trim().toLowerCase();
@@ -488,7 +671,19 @@ function renderServices(root, name, s, tc) {
         {
           class: "btn btn--small",
           type: "button",
-          title: "unselect every peer and service on this tailnet",
+          disabled: !services.length,
+          title:
+            "select every advertised service on this tailnet, filter ignored (turns allow-all off)",
+          onclick: () => selectAll(name, services.map((x) => x.name)),
+        },
+        `select all ${services.length}`,
+      ),
+      h(
+        "button",
+        {
+          class: "btn btn--small",
+          type: "button",
+          title: "unselect every unlocked peer and service on this tailnet (locked essentials are kept)",
           onclick: () => clearSelections(name),
         },
         "clear all",
@@ -530,24 +725,7 @@ function renderServices(root, name, s, tc) {
     h(
       "div",
       { class: "table-wrap" },
-      h(
-        "table",
-        {},
-        h(
-          "thead",
-          {},
-          h(
-            "tr",
-            {},
-            h("th", {}, ""),
-            h("th", {}, "name"),
-            h("th", {}, "display"),
-            h("th", {}, "vip"),
-            h("th", {}, "ports"),
-          ),
-        ),
-        tbody,
-      ),
+      h("table", {}, h("thead", {}, theadRow), tbody),
     ),
   );
 
@@ -557,7 +735,8 @@ function renderServices(root, name, s, tc) {
 // --- settings -----------------------------------------------------------------
 
 function renderSettings(root, name, s, tc) {
-  const resources = tc.resources || [];
+  const locked = new Set(tc.locked || []);
+  const resources = [...new Set([...(tc.resources || []), ...(tc.locked || [])])];
 
   root.append(
     h("h3", { class: "section" }, "identity"),
@@ -657,23 +836,33 @@ function renderSettings(root, name, s, tc) {
         ? h(
             "div",
             { class: "chips" },
-            ...resources.map((r) =>
-              h(
-                "span",
-                { class: "chip" },
-                r,
-                h(
-                  "button",
+          ...resources.map((r) =>
+            locked.has(r)
+              ? h(
+                  "span",
                   {
-                    class: "chip__x",
-                    type: "button",
-                    title: "stop exposing " + r,
-                    onclick: () => forgetPeer(name, r),
+                    class: "chip chip--locked",
+                    title: "locked essential — unlock on the Peers or Services tab",
                   },
-                  "×",
+                  "🔒 ",
+                  r,
+                )
+              : h(
+                  "span",
+                  { class: "chip" },
+                  r,
+                  h(
+                    "button",
+                    {
+                      class: "chip__x",
+                      type: "button",
+                      title: "stop exposing " + r,
+                      onclick: () => forgetPeer(name, r),
+                    },
+                    "×",
+                  ),
                 ),
-              ),
-            ),
+          ),
           )
         : h(
             "span",

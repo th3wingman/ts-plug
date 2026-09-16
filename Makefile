@@ -138,6 +138,17 @@ install-ts-router: ts-router
 	sudo install -m 0755 build/ts-router $(BINDIR)/ts-router
 	sudo setcap 'cap_net_bind_service=+ep' $(BINDIR)/ts-router
 
+# Install (or upgrade) ts-multinet as a systemd service on THIS machine via
+# scripts/install-ts-multinet.sh. The binary is built as the invoking user
+# first, so the script never runs `go build` under root's cold cache; existing
+# config and node state are kept, and the daemon is restarted.
+#
+#   make install-ts-multinet
+#   make install-ts-multinet ARGS=--uninstall      # add ARGS=--purge to drop state
+#   make install-ts-multinet ARGS="--config my.jsonc"
+install-ts-multinet: ts-multinet
+	sudo scripts/install-ts-multinet.sh --binary $(CURDIR)/build/ts-multinet $(ARGS)
+
 clean:
 	rm -rf $(BUILD_DIR)/*
 
@@ -153,4 +164,4 @@ test: examples
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router ts-unplug-proxy ts-multinet docker-ts-multinet darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router darwin-ts-unplug-proxy linux linux-ts-plug linux-ts-unplug linux-ts-router linux-ts-unplug-proxy pi pi-ts-plug pi-ts-unplug pi-ts-router deploy install install-ts-router install-service
+.PHONY: all test examples clean binaries ts-plug ts-unplug ts-router ts-unplug-proxy ts-multinet docker-ts-multinet darwin darwin-ts-plug darwin-ts-unplug darwin-ts-router darwin-ts-unplug-proxy linux linux-ts-plug linux-ts-unplug linux-ts-router linux-ts-unplug-proxy pi pi-ts-plug pi-ts-unplug pi-ts-router deploy install install-ts-router install-ts-multinet install-service

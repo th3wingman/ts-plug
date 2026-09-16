@@ -88,6 +88,30 @@ export function errMsg(tailnet, text) {
   state.msgs[tailnet] = { kind: "error", text };
 }
 
+// lastSig is the render signature of the last painted view. Polling skips the
+// re-render when nothing changed, so the 5s tick no longer tears down (and
+// scroll-resets) a table the user is reading.
+let lastSig = null;
+
+// renderSig covers everything a view reads: a change in any of these is worth
+// repainting for.
+const renderSig = () =>
+  JSON.stringify([
+    state.status,
+    state.peers,
+    state.services,
+    state.applied,
+    state.config,
+    state.msgs,
+    state.probed,
+    state.peerFilter,
+    state.svcFilter,
+    state.hideInactive,
+    state.showAll,
+    state.pageMsg,
+    state.peerErr,
+  ]);
+
 export async function refresh() {
   try {
     const [status, peers, services, applied, config] = await Promise.all([
@@ -114,7 +138,11 @@ export async function refresh() {
     $("#offline-banner").hidden = false; // keep last data on screen
   }
   paintApplied(); // topbar: applied vs. config-file drift
-  rerender(); // re-render the current view
+  const sig = renderSig();
+  if (sig === lastSig) return; // nothing changed — leave the DOM alone
+  // rerender reports whether it painted: a focused input suppresses it, and
+  // then the data must stay "unpainted" so the next poll retries.
+  if (rerender()) lastSig = sig;
 }
 
 // paintApplied renders the topbar indicator: green when the running config
@@ -241,6 +269,49 @@ export async function setHostname(name, value) {
   refresh();
 }
 
+// selectAll adds a whole set of resources at once — the tables' "select all".
+// One config write instead of a select per row. The daemon clears allow_all,
+// so the set becomes explicit and rows stay individually uncheckable.
+export async function selectAll(name, resources) {
+  if (!resources.length) return;
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/select-all`, {
+      resources,
+    });
+    msg(name, { kind: "ok", text: res.ok || `selected ${resources.length}` });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
+// setLock pins (or releases) one selection as an essential — locked
+// selections survive clear-all and block disabling the tailnet (jumpboxes,
+// logging, metrics).
+export async function setLock(name, resource, on) {
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/lock`, {
+      peer: resource,
+      on,
+    });
+    msg(name, {
+      kind: "ok",
+      text: res.ok || (on ? `${resource} locked` : `${resource} unlocked`),
+    });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
+// testHost is the on-demand connectivity probe behind each row's "test"
+// button: GET /check resolves the name and dials it, the same call
+// `ts-multinet check` makes. The caller renders the result inline — nothing
+// here touches state, so a probe never re-renders (or scroll-resets) a table.
+export async function testHost(host, port) {
+  return get(`/check?host=${encodeURIComponent(host)}&port=${port}`);
+}
+
 export async function togglePeer(name, peer, select) {
   try {
     await post(
@@ -266,7 +337,7 @@ export async function forgetPeer(name, peer) {
 export async function clearSelections(name) {
   if (
     !window.confirm(
-      `clear all selections on "${name}"? peers and services stop resolving from this host`,
+      `clear all selections on "${name}"? unlocked peers and services stop resolving from this host — locked essentials are kept`,
     )
   )
     return;

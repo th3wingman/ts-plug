@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -121,12 +122,20 @@ func resolveSelections(suffix string, conf TailnetConf, st *ipnstate.Status, ser
 		}
 	}
 
-	want := make([]string, 0, len(conf.Resources))
+	want := make([]string, 0, len(conf.Resources)+len(conf.Locked))
 	if conf.AllowAll {
 		want = append(want, order...)
 		sort.Strings(want)
 	} else {
 		want = append(want, conf.Resources...)
+	}
+	// Locked selections are always selected: every daemon write keeps
+	// locked ⊆ resources, and this also self-heals a hand-edited config
+	// that lists a lock without the matching resource.
+	for _, l := range conf.Locked {
+		if !slices.Contains(want, l) {
+			want = append(want, l)
+		}
 	}
 
 	for _, short := range want {

@@ -35,16 +35,38 @@ function parseRoute() {
   return { view: "overview" };
 }
 
+// renderCurrent paints the routed view and reports whether it actually
+// painted: a view declines while an input has focus, and refresh() uses that
+// to know whether its data is on screen yet.
 function renderCurrent() {
   const r = parseRoute();
   document.title =
     r.view === "tailnet" ? `${r.name} — ts-multinet` : "ts-multinet";
-  if (r.view === "config") renderConfig(app);
-  else if (r.view === "tailnet") renderTailnet(app, r.name, r.tab);
-  else renderOverview(app);
+  if (r.view === "config") {
+    renderConfig(app);
+    return true;
+  }
+  if (r.view === "tailnet") return renderTailnet(app, r.name, r.tab);
+  renderOverview(app);
+  return true;
 }
 
-setRerender(renderCurrent);
+// rerenderView keeps the reading position across a repaint. Replacing the
+// view recreates .table-wrap (which owns the table's scroll) and can clamp the
+// window scroll — capture both and put them back. Row-only updates call
+// renderRows() directly and never come through here.
+function rerenderView() {
+  const y = window.scrollY;
+  const wrap = $(".table-wrap");
+  const top = wrap ? wrap.scrollTop : 0;
+  if (!renderCurrent()) return false;
+  window.scrollTo(0, y);
+  const next = $(".table-wrap");
+  if (next) next.scrollTop = top;
+  return true;
+}
+
+setRerender(rerenderView);
 
 $("#reload-btn").addEventListener("click", reloadDaemon);
 window.addEventListener("hashchange", renderCurrent);
