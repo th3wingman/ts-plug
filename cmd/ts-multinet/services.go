@@ -35,12 +35,6 @@ func serviceFQDN(name tailcfg.ServiceName, suffix string) string {
 	return label + "." + suffix
 }
 
-// resourceAlias is the friendly alias a selection resolves under: peer shorts
-// pass through, service names lose their "svc:" prefix.
-func resourceAlias(short, domain string) string {
-	return strings.TrimPrefix(short, "svc:") + "." + domain
-}
-
 // isServiceResource reports whether a config selection names a service.
 func isServiceResource(name string) bool {
 	return strings.HasPrefix(name, "svc:")

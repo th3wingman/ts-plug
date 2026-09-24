@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
@@ -122,7 +123,7 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	reg.registerResolver(conf.Name, resolve)
 
 	fwd := newForwarder(conf.Name, tun, mtu, reg, ts.Dial, resolve, newPinger(lc))
-	tn.wg.Add(2) // forwarder + watcher: Close waits for both before the TUN fd drops
+	tn.wg.Add(3) // forwarder + watcher + netmap subscriber: Close waits for all before the TUN fd drops
 	go func() {
 		defer tn.wg.Done()
 		if err := fwd.run(tctx); err != nil && tctx.Err() == nil {
@@ -134,6 +135,11 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	go func() {
 		defer tn.wg.Done()
 		tn.watch(tctx, reg, onRunning)
+	}()
+
+	go func() {
+		defer tn.wg.Done()
+		tn.watchNetmap(tctx, onRunning)
 	}()
 	slog.Info("tailnet up", "name", conf.Name, "tun", dev, "cidr", conf.CIDR, "suffix", orDefault(suffix, "(auto)"))
 	if w := tldWarning(conf.domainName()); w != "" {
@@ -207,6 +213,60 @@ func (t *Tailnet) watch(ctx context.Context, reg *registry, onRunning func()) {
 		case <-tick.C:
 		}
 	}
+}
+
+// watchNetmap re-applies selections when the control plane pushes a netmap
+// change that can alter what the auto-select rules match: a peer added,
+// replaced, or removed (tag changes always travel as full-node
+// PeersChanged), or this node's own capabilities changed (advertised-service
+// visibility lives in them). The bus is push — no polling — so a device
+// tagged in the admin console lands on the next control update, and an
+// NotifyPeerPatches keeps the cheap shape: online/offline flaps arrive as
+// narrow PeerChangedPatch (ignored — they can't change a match) instead of
+// being promoted to full-node PeersChanged, which would re-run applySelections
+// on every flap. (ipn.NotifyRateLimit is deliberately absent: it is a
+// legacy-netmap bit that localapi rejects in combination with the delta
+// bits — a 400 on every (re)subscribe.) A dropped stream is resubscribed — a
+// dead backend is the health watchdog's problem, not ours.
+func (t *Tailnet) watchNetmap(ctx context.Context, onRunning func()) {
+	for ctx.Err() == nil {
+		w, err := t.lc.WatchIPNBus(ctx, ipn.NotifyPeerChanges|ipn.NotifyPeerPatches)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Warn("netmap watch failed — retrying", "name", t.conf.Name, "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+			continue
+		}
+		for {
+			n, err := w.Next()
+			if err != nil {
+				w.Close()
+				if ctx.Err() != nil {
+					return
+				}
+				slog.Warn("netmap watch ended — resubscribing", "name", t.conf.Name, "err", err)
+				break
+			}
+			if autoNotifyApplies(n) && onRunning != nil {
+				onRunning() // applySelections: idempotent, d.mu-serialized
+			}
+		}
+	}
+}
+
+// autoNotifyApplies reports whether an IPN notification can change what the
+// auto-select rules match: full peer add/replace/remove (tags ride whole
+// nodes — patches never carry them), or a self change (this node's
+// capabilities hold the advertised-service visibility). Pure, so the trigger
+// is unit-testable without a bus.
+func autoNotifyApplies(n ipn.Notify) bool {
+	return n.SelfChange != nil || len(n.PeersChanged) > 0 || len(n.PeersRemoved) > 0
 }
 
 // status returns a snapshot of the tailnet's backend state and login URL.

@@ -35,11 +35,21 @@ const probeTimeout = 1500 * time.Millisecond
 // until something restarts the node. A tailnet unseen online for
 // unhealthyAfter, or with a dead forwarder, is restarted in place;
 // restartCooldown keeps a long outage from thrashing it.
+//
+// Resume and network switches skip the wait: the network watcher (below)
+// detects them directly and runs a forced pass once the link settles — a
+// node dark after a resume is exactly the stuck state, and 90s of grace
+// there is 90s of avoidable downtime.
 const (
 	healthTick         = 30 * time.Second
 	unhealthyAfter     = 90 * time.Second
 	restartCooldown    = 5 * time.Minute
-	healthProbeTimeout = 3 * time.Second // TSMP pong; longer than the TCP probeTimeout — DERP-relayed pongs take seconds
+	healthProbeTimeout = 3 * time.Second  // TSMP pong; longer than the TCP probeTimeout — DERP-relayed pongs take seconds
+	forceProbeWait     = 10 * time.Second // forced pass: cold disco after a resume takes seconds to answer a pong
+
+	netWatchTick  = 2 * time.Second  // /proc poll cadence for resume/route events
+	suspendJitter = 10 * time.Second // uptime advancing this much past the monotonic clock reads as "was suspended"
+	resumeSettle  = 15 * time.Second // wifi reassociation + dhcp after a resume/switch, before the forced pass
 )
 
 // tailnetHealth is the watchdog's per-tailnet memory: when it was last online,
@@ -54,12 +64,18 @@ type tailnetHealth struct {
 // needsRestart decides whether a tailnet's health warrants an in-place restart.
 // A dead forwarder qualifies immediately (cooldown permitting); a node that was
 // online before but has not been seen online for unhealthyAfter also qualifies.
-func needsRestart(h *tailnetHealth, forwarderDead bool, now time.Time) bool {
+// force (a resume or network switch just settled) drops the unhealthyAfter
+// wait: a once-online node still dark right after the link came back is not
+// going to heal inside the grace period, and waiting it out is pure downtime.
+func needsRestart(h *tailnetHealth, forwarderDead bool, now time.Time, force bool) bool {
 	if h == nil || now.Sub(h.lastRestart) < restartCooldown {
 		return false
 	}
 	if forwarderDead {
 		return true
+	}
+	if force {
+		return h.everOnline
 	}
 	return h.everOnline && now.Sub(h.lastOnline) > unhealthyAfter
 }
@@ -102,6 +118,11 @@ type Daemon struct {
 	// tests can stub the service list the way they stub peerShorts.
 	services func(ctx context.Context, tn *Tailnet) (map[tailcfg.ServiceName]tailcfg.ServiceDetails, error)
 
+	// peerTagsByShort lists every non-Mullvad peer's short name and ACL tags —
+	// the live data auto-select tag rules are checked against for the control
+	// API (mutation notes, forget refusal). A field so tests can stub it.
+	peerTagsByShort func(ctx context.Context, tn *Tailnet) (map[string][]string, error)
+
 	// applied snapshots the config file after the last successful apply, so a
 	// later manual edit is detectable as drift (the UI then says "reload").
 	// Guarded by appliedMu, deliberately independent of cfgMu/d.mu.
@@ -115,7 +136,31 @@ type Daemon struct {
 }
 
 func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
-	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, services: liveServices, tunRetries: map[string]bool{}, health: map[string]*tailnetHealth{}}
+	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, services: liveServices, peerTagsByShort: livePeerTagsByShort, tunRetries: map[string]bool{}, health: map[string]*tailnetHealth{}}
+}
+
+// livePeerTagsByShort is the production peerTagsByShort: live status,
+// Mullvad exits filtered, tags flattened to plain strings keyed by the
+// short names `peers` and selection use. Nil-lc tailnets (tests, parked)
+// yield an empty map, never a panic.
+func livePeerTagsByShort(ctx context.Context, tn *Tailnet) (map[string][]string, error) {
+	if tn == nil || tn.lc == nil {
+		return nil, nil
+	}
+	st, err := tn.lc.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, p := range st.Peer {
+		if isMullvad(p.DNSName) {
+			continue
+		}
+		if s := peerShort(p.DNSName, tn.suffix); s != "" && p.Tags != nil {
+			out[s] = p.Tags.AsSlice()
+		}
+	}
+	return out, nil
 }
 
 // serviceList runs the swappable service discovery, tolerating a parked or
@@ -391,16 +436,22 @@ func (d *Daemon) applySelections() {
 				continue
 			}
 			entries = append(entries, hostsEntry{
-				IP:      ip.String(),
-				Alias:   resourceAlias(r.Short, conf.domainName()),
-				FQDN:    r.FQDN,
-				Tailnet: conf.Name,
-				Native:  conf.NativeDNS,
+				IP:          ip.String(),
+				Alias:       strings.TrimPrefix(r.Short, "svc:"), // bare name; qualified below if needed
+				FQDN:        r.FQDN,
+				Tailnet:     conf.Name,
+				Native:      conf.NativeDNS,
+				Domain:      conf.domainName(),
+				ForceDomain: conf.DomainHosts,
 			})
 			applied++
 		}
 		tn.setApplied(applied)
 	}
+	// Bare names by default, qualified only where two tailnets would write
+	// the same name (or domain_hosts forces it) — one deterministic spelling
+	// per resource, like the rest of /etc/hosts.
+	qualifyHostsAliases(entries)
 	if err := writeHostsBlock(d.hostsFile, entries); err != nil {
 		slog.Error("hosts block rewrite failed", "path", d.hostsFile, "err", err)
 	} else {
@@ -537,12 +588,14 @@ func (d *Daemon) reload() string {
 // --- JSON wire types (shared with the client) ---
 
 type peerJSON struct {
-	Name     string `json:"name"`
-	FQDN     string `json:"fqdn,omitempty"` // full MagicDNS name (peers --details)
-	IP       string `json:"ip"`
-	OS       string `json:"os"`
-	Online   bool   `json:"online"`
-	Services []int  `json:"services"`
+	Name     string   `json:"name"`
+	FQDN     string   `json:"fqdn,omitempty"` // full MagicDNS name (peers --details)
+	IP       string   `json:"ip"`
+	OS       string   `json:"os"`
+	Online   bool     `json:"online"`
+	Services []int    `json:"services"`
+	Selected bool     `json:"selected"`       // effective: resources, locked, allow_all, or an auto rule
+	Tags     []string `json:"tags,omitempty"` // ACL tags — the UI turns each into a one-click tag: rule
 }
 
 type tailnetPeersJSON struct {
@@ -607,7 +660,9 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/lock", d.handleLock)
 	mux.HandleFunc("POST /tailnet/{name}/forget", d.handleForget)
 	mux.HandleFunc("POST /tailnet/{name}/allow-all", d.handleAllowAll)
+	mux.HandleFunc("POST /tailnet/{name}/auto", d.handleAuto)
 	mux.HandleFunc("POST /tailnet/{name}/native-dns", d.handleNativeDNS)
+	mux.HandleFunc("POST /tailnet/{name}/domain-hosts", d.handleDomainHosts)
 	mux.HandleFunc("POST /tailnet/{name}/authkey", d.handleAuthKey)
 	mux.HandleFunc("POST /tailnet/{name}/enabled", d.handleEnabled)
 	mux.HandleFunc("POST /tailnet/{name}/clear", d.handleClear)
@@ -731,13 +786,23 @@ func (d *Daemon) handlePeers(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(matched, func(i, j int) bool { return matched[i].DNSName < matched[j].DNSName })
 
 		services := probePeers(r.Context(), tn.ts.Dial, matched, ports)
+		// effective selection = resources ∪ locked ∪ allow_all ∪ auto rules —
+		// the same union resolveSelections applies, so the checkbox state and
+		// the hosts block can't disagree
+		conf := d.confFor(tn.conf.Name)
 		for _, p := range matched {
 			ip := ""
 			if len(p.TailscaleIPs) > 0 {
 				ip = p.TailscaleIPs[0].String()
 			}
+			var tags []string
+			if p.Tags != nil {
+				tags = p.Tags.AsSlice()
+			}
+			short := shortName(p.DNSName, tn.suffix)
 			tp.Peers = append(tp.Peers, peerJSON{
-				Name: shortName(p.DNSName, tn.suffix), FQDN: strings.TrimSuffix(p.DNSName, "."), IP: ip, OS: p.OS, Online: p.Online, Services: services[ip],
+				Name: short, FQDN: strings.TrimSuffix(p.DNSName, "."), IP: ip, OS: p.OS, Online: p.Online, Services: services[ip], Tags: tags,
+				Selected: conf.AllowAll || slices.Contains(conf.Resources, short) || slices.Contains(conf.Locked, short) || autoTagMatched(conf.AutoSelect, p),
 			})
 		}
 		out = append(out, tp)
@@ -780,7 +845,7 @@ func (d *Daemon) handleServices(w http.ResponseWriter, r *http.Request) {
 				DisplayName: orDefault(sd.DisplayName, name),
 				VIPs:        vips,
 				Ports:       ports,
-				Selected:    slices.Contains(conf.Resources, name) || slices.Contains(conf.Locked, name),
+				Selected:    slices.Contains(conf.Resources, name) || slices.Contains(conf.Locked, name) || autoSvcMatched(conf.AutoSelect, name, sd),
 			})
 		}
 		out = append(out, ts)
@@ -847,8 +912,10 @@ func (d *Daemon) handleRestart(w http.ResponseWriter, r *http.Request) {
 // healthWatch is the daemon's self-heal loop. tsnet normally reconnects on its
 // own after an outage, but a node can get stuck or its datapath can die; this
 // restarts such a tailnet in place so the host does not stay dark until a
-// manual restart.
+// manual restart. Resume and network switches additionally trigger an
+// immediate forced pass — see watchNetworkEvents.
 func (d *Daemon) healthWatch(ctx context.Context) {
+	events := watchNetworkEvents(ctx)
 	tick := time.NewTicker(healthTick)
 	defer tick.Stop()
 	for {
@@ -856,24 +923,41 @@ func (d *Daemon) healthWatch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			d.checkHealth(ctx)
+			d.checkHealth(ctx, false)
+		case <-events:
+			// Let the link settle first (wifi reassociation, dhcp) — a forced
+			// pass while still offline would restart nodes into the void. If
+			// it is still down after the settle, drop the event: the route
+			// returning fires a fresh one.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(resumeSettle):
+			}
+			if !hasDefaultRoute() {
+				continue
+			}
+			slog.Info("network change detected — probing tailnet health (fast recovery)")
+			d.checkHealth(ctx, true)
 		}
 	}
 }
 
-func (d *Daemon) checkHealth(ctx context.Context) {
+// checkHealth probes every tailnet and restarts the unhealthy ones in place.
+// force marks the event-driven pass after a resume or network switch settled:
+// the unhealthyAfter grace is skipped and probes get the longer timeout, since
+// disco paths are cold right after a link change and a 3s pong window can
+// misread a healthy-but-slow node as dark.
+func (d *Daemon) checkHealth(ctx context.Context, force bool) {
+	probeWait := healthProbeTimeout
+	if force {
+		probeWait = forceProbeWait
+	}
 	for _, tn := range d.liveTailnets() {
 		if tn.lc == nil {
 			continue // test stub
 		}
-		online := false
-		if st, err := tn.lc.Status(ctx); err == nil && st.BackendState == "Running" && st.Self != nil {
-			// Self.Online is control-plane only (open map poll). A pong from a
-			// peer through the path the forwarder actually uses is the other
-			// half — an open map poll with dead peer paths is exactly the
-			// stuck state this watchdog exists to catch.
-			online = st.Self.Online && d.datapathOK(ctx, tn, st)
-		}
+		online := d.tailnetOnline(ctx, tn, probeWait)
 		now := time.Now()
 		h := d.health[tn.conf.Name]
 		if h == nil {
@@ -885,11 +969,11 @@ func (d *Daemon) checkHealth(ctx context.Context) {
 			h.everOnline = true
 		}
 		dead := tn.forwarderDead()
-		if !needsRestart(h, dead, now) {
+		if !needsRestart(h, dead, now, force) {
 			continue
 		}
 		slog.Warn("tailnet unhealthy — restarting in place (node state kept, no re-login)",
-			"name", tn.conf.Name, "online", online, "forwarder_dead", dead,
+			"name", tn.conf.Name, "online", online, "forwarder_dead", dead, "after_network_change", force,
 			"last_online", h.lastOnline.Format(time.RFC3339))
 		h.lastRestart = now
 		h.lastOnline = now // grace window for the restart to come up
@@ -899,12 +983,27 @@ func (d *Daemon) checkHealth(ctx context.Context) {
 	}
 }
 
+// tailnetOnline is the full online signal for one tailnet: backend Running
+// with the control-plane Self.Online, plus a datapath pong through the path
+// the forwarder actually uses. An open map poll with dead peer paths is
+// exactly the stuck state this watchdog exists to catch, so either half
+// failing reads as offline.
+func (d *Daemon) tailnetOnline(ctx context.Context, tn *Tailnet, probeWait time.Duration) bool {
+	st, err := tn.lc.Status(ctx)
+	if err != nil || st.BackendState != "Running" || st.Self == nil {
+		return false
+	}
+	return st.Self.Online && d.datapathOK(ctx, tn, st, probeWait)
+}
+
 // datapathOK probes peer traffic with the same TSMP ping `check` uses.
 // Only peers control reports online are fair targets — an offline peer must
 // never read as our datapath being dead. Two tries weed out one peer with
 // broken disco; no probeable peer is vacuously true (nothing to prove it
-// wrong, so health falls back to the control-plane signal).
-func (d *Daemon) datapathOK(ctx context.Context, tn *Tailnet, st *ipnstate.Status) bool {
+// wrong, so health falls back to the control-plane signal). probeWait bounds
+// each ping (3s on the regular tick; 10s on the after-resume pass, when disco
+// is cold and pongs relay through DERP).
+func (d *Daemon) datapathOK(ctx context.Context, tn *Tailnet, st *ipnstate.Status, probeWait time.Duration) bool {
 	peers := make([]*ipnstate.PeerStatus, 0, len(st.Peer))
 	for _, p := range st.Peer {
 		peers = append(peers, p)
@@ -915,7 +1014,7 @@ func (d *Daemon) datapathOK(ctx context.Context, tn *Tailnet, st *ipnstate.Statu
 	}
 	ping := newPinger(tn.lc)
 	for _, ip := range targets {
-		pctx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+		pctx, cancel := context.WithTimeout(ctx, probeWait)
 		_, ok := ping(pctx, ip)
 		cancel()
 		if ok {
@@ -924,6 +1023,116 @@ func (d *Daemon) datapathOK(ctx context.Context, tn *Tailnet, st *ipnstate.Statu
 	}
 	slog.Warn("datapath probe failed — tailnet reads online but peers are unreachable", "name", tn.conf.Name, "tried", len(targets))
 	return false
+}
+
+// watchNetworkEvents detects the two host events the 30s health tick is too
+// slow for: a suspend/resume (the kernel uptime in /proc/uptime keeps
+// counting through suspend while the monotonic clock does not — a jump
+// between polls means the system slept) and a default-route change (network
+// switch, wifi ↔ ethernet). One buffered, coalesced send; best-effort —
+// unreadable /proc just means no fast recovery, the regular tick still runs.
+//
+// ponytail: /proc polling, not rtnetlink or logind signals — an intra-network
+// roam that keeps the same gateway stays invisible here and waits for the
+// 90s watchdog; move to netlink/logind if that gap ever matters.
+func watchNetworkEvents(ctx context.Context) <-chan struct{} {
+	out := make(chan struct{}, 1)
+	go func() {
+		tick := time.NewTicker(netWatchTick)
+		defer tick.Stop()
+		var lastUptime time.Duration
+		var lastRoutes string
+		var lastAt time.Time
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			up, err := readUptime()
+			if err != nil {
+				continue
+			}
+			routes := defaultRoutes()
+			if !lastAt.IsZero() {
+				if suspendedSince(up-lastUptime, time.Since(lastAt)) > suspendJitter || routes != lastRoutes {
+					select {
+					case out <- struct{}{}:
+					default:
+					}
+				}
+			}
+			lastUptime, lastRoutes, lastAt = up, routes, time.Now()
+		}
+	}()
+	return out
+}
+
+// suspendedSince reports how much longer the kernel uptime advanced than the
+// monotonic clock did between two polls — the time the system spent
+// suspended. Scheduling jitter can make uptime read a hair behind the clock;
+// that clamps to zero rather than going negative.
+func suspendedSince(uptimeAdvanced, monotonicElapsed time.Duration) time.Duration {
+	if d := uptimeAdvanced - monotonicElapsed; d > 0 {
+		return d
+	}
+	return 0
+}
+
+// readUptime returns the kernel uptime (CLOCK_BOOTTIME — includes suspend)
+// from /proc/uptime.
+func readUptime() (time.Duration, error) {
+	b, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	return parseUptime(string(b))
+}
+
+// parseUptime is readUptime on bytes (testable without /proc).
+func parseUptime(s string) (time.Duration, error) {
+	f := strings.Fields(s)
+	if len(f) == 0 {
+		return 0, fmt.Errorf("uptime: empty")
+	}
+	sec, err := strconv.ParseFloat(f[0], 64)
+	if err != nil {
+		return 0, fmt.Errorf("uptime %q: %w", f[0], err)
+	}
+	return time.Duration(sec * float64(time.Second)), nil
+}
+
+// defaultRoutes renders the default routes (iface + gateway) as one
+// comparable string — change detection only, so the gateway stays raw hex.
+// Empty string means no default route (offline).
+func defaultRoutes() string {
+	b, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	return parseDefaultRoutes(string(b))
+}
+
+// parseDefaultRoutes is defaultRoutes on bytes (testable without /proc).
+// Rows are sorted so a reorder is not a change.
+func parseDefaultRoutes(procRoute string) string {
+	var rows []string
+	for _, line := range strings.Split(procRoute, "\n")[1:] { // header first
+		f := strings.Fields(line)
+		if len(f) < 3 || f[1] != "00000000" {
+			continue // not a default route
+		}
+		rows = append(rows, f[0]+" "+f[2])
+	}
+	sort.Strings(rows)
+	return strings.Join(rows, "\n")
+}
+
+// hasDefaultRoute reports whether the host currently has anywhere to send
+// packets — the precondition for a forced health pass (restarting nodes
+// while offline just parks them in a void until the link returns).
+func hasDefaultRoute() bool {
+	return defaultRoutes() != ""
 }
 
 // probeTargets picks up to two online peers as TSMP targets, lowest IP first
@@ -975,6 +1184,7 @@ func (d *Daemon) handleClear(w http.ResponseWriter, r *http.Request) {
 		kept = append(kept[:0], tc.Locked...)
 		tc.Resources = kept
 		tc.AllowAll = false
+		tc.AutoSelect = nil // a rule left behind would re-select everything on the next apply
 		return nil
 	}, func(req selectionReq) string {
 		if len(kept) == 0 {
@@ -1438,6 +1648,13 @@ func (d *Daemon) handleForget(w http.ResponseWriter, r *http.Request) {
 		if slices.Contains(tc.Locked, req.Peer) {
 			return clientError{req.Peer + " is locked — unlock it first (`ts-multinet unlock " + tc.Name + " " + req.Peer + "`"}
 		}
+		// An auto rule would re-add it on the next apply — refuse and name the
+		// rule, the same "unlock first" pattern as locked.
+		if rule, err := d.autoRuleFor(r.Context(), d.tailnetByName(tc.Name), *tc, req.Peer); err != nil {
+			return clientError{"could not check auto-select rules (tailnet status unavailable): " + err.Error()}
+		} else if rule != "" {
+			return clientError{fmt.Sprintf("%s is auto-selected by %s — remove the rule first (`ts-multinet auto %s off %s`)", req.Peer, rule, tc.Name, rule)}
+		}
 		tc.Resources = slices.DeleteFunc(tc.Resources, func(s string) bool { return s == req.Peer })
 		return nil
 	}, nil)
@@ -1496,6 +1713,122 @@ func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
 		tc.AllowAll = *req.On
 		return nil
 	}, nil)
+}
+
+// handleAuto manages a tailnet's auto_select rules: tag:<acl-tag> selects
+// peers carrying that ACL tag, svc:<glob> selects advertised services whose
+// label matches. Rules are never validated against what exists right now —
+// the point is that a tag or service can appear later — only for
+// well-formedness; the reply says what they currently match so a typo'd
+// glob surfaces at write time, not as a silent no-op.
+func (d *Daemon) handleAuto(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		remove := req.On != nil && !*req.On
+		if len(req.Resources) == 0 {
+			if !remove {
+				return clientError{"body must be {\"resources\": [\"tag:x\"|\"svc:glob\", …]} to add, {\"on\": false, \"resources\": […]} to remove, or {\"on\": false} to clear"}
+			}
+			tc.AutoSelect = nil // off with no rules: clear them all
+			return nil
+		}
+		for _, rule := range req.Resources {
+			norm, err := normalizeAutoRule(rule)
+			if err != nil {
+				return clientError{err.Error()}
+			}
+			if remove {
+				tc.AutoSelect = slices.DeleteFunc(tc.AutoSelect, func(s string) bool { return s == norm })
+			} else if !slices.Contains(tc.AutoSelect, norm) {
+				tc.AutoSelect = append(tc.AutoSelect, norm)
+			}
+		}
+		return nil
+	}, func(req selectionReq) string {
+		return d.autoRulesNote(r.Context(), name)
+	})
+}
+
+// autoRulesNote is the auto mutations' "what did that do": the rules plus
+// what they currently select. Best effort — a tailnet that isn't running or
+// a discovery hiccup degrades to naming the rules, never to an error: the
+// write already succeeded.
+func (d *Daemon) autoRulesNote(ctx context.Context, name string) string {
+	conf := d.confFor(name)
+	if len(conf.AutoSelect) == 0 {
+		return "auto-select rules cleared"
+	}
+	rules := strings.Join(conf.AutoSelect, ", ")
+	d.mu.Lock()
+	tn := d.tailnetByName(name)
+	d.mu.Unlock()
+	if tn == nil {
+		return "rules: " + rules + " — apply when the tailnet starts"
+	}
+	var matches []string
+	if tagsByShort, err := d.peerTagsByShort(ctx, tn); err == nil {
+		for short, tags := range tagsByShort {
+			for _, rule := range conf.AutoSelect {
+				if strings.HasPrefix(rule, "tag:") && slices.Contains(tags, rule) {
+					matches = append(matches, short)
+				}
+			}
+		}
+	}
+	if svcs, err := d.serviceList(ctx, tn); err == nil {
+		for _, name := range serviceNames(svcs) {
+			if autoSvcMatched(conf.AutoSelect, name, svcs[tailcfg.ServiceName(name)]) {
+				matches = append(matches, name)
+			}
+		}
+	}
+	sort.Strings(matches)
+	if len(matches) == 0 {
+		return "rules: " + rules + " — match nothing yet (a later tag or service lands automatically)"
+	}
+	return "rules: " + rules + " — currently select: " + strings.Join(matches, ", ")
+}
+
+// autoRuleFor returns the auto_select rule that would keep selecting name
+// (a peer short name or svc: service) right now — forgetting something a
+// rule re-adds on the next apply would only look broken, so forget refuses
+// and names the rule. Services match by glob or advertised ports; peers
+// need their live tags.
+func (d *Daemon) autoRuleFor(ctx context.Context, tn *Tailnet, conf TailnetConf, name string) (string, error) {
+	if isServiceResource(name) {
+		var svcs map[tailcfg.ServiceName]tailcfg.ServiceDetails
+		if tn != nil {
+			if s, err := d.serviceList(ctx, tn); err == nil {
+				svcs = s
+			}
+		}
+		for _, rule := range conf.AutoSelect {
+			switch {
+			case strings.HasPrefix(rule, "svc:"):
+				if svcRuleMatches(rule, name) {
+					return rule, nil
+				}
+			case strings.HasPrefix(rule, "tcp:"), strings.HasPrefix(rule, "udp:"):
+				if sd, ok := svcs[tailcfg.ServiceName(name)]; ok && portRuleMatches(rule, sd.Ports) {
+					return rule, nil
+				}
+			}
+		}
+		return "", nil
+	}
+	if tn == nil {
+		return "", nil // not running: no live tags, nothing to refuse
+	}
+	tagsByShort, err := d.peerTagsByShort(ctx, tn)
+	if err != nil {
+		return "", err
+	}
+	for _, rule := range conf.AutoSelect {
+		if strings.HasPrefix(rule, "tag:") && slices.Contains(tagsByShort[name], rule) {
+			return rule, nil
+		}
+	}
+	return "", nil
 }
 
 // handleAuthKey stores an auth key for the tailnet — tagged-device /
@@ -1600,6 +1933,25 @@ func (d *Daemon) handleNativeDNS(w http.ResponseWriter, r *http.Request) {
 			return "native MagicDNS name added to the hosts block (completion offers both spellings)"
 		}
 		return "native MagicDNS name removed from the hosts block — completion offers <host>.<domain> only"
+	})
+}
+
+// handleDomainHosts toggles whether this tailnet's hosts-block entries always
+// carry the .<domain> suffix. Default off: unique names are written bare (like
+// any other /etc/hosts line), and a name two tailnets share is qualified
+// automatically — DNS resolution is unaffected either way.
+func (d *Daemon) handleDomainHosts(w http.ResponseWriter, r *http.Request) {
+	d.updateTailnet(w, r, false, func(req selectionReq, tc *TailnetConf, peers []string) error {
+		if req.On == nil {
+			return clientError{"body must be {\"on\": true|false}"}
+		}
+		tc.DomainHosts = *req.On
+		return nil
+	}, func(req selectionReq) string {
+		if req.On != nil && *req.On {
+			return "host entries now always carry .<domain>"
+		}
+		return "host entries bare again (a name two tailnets share still gets qualified)"
 	})
 }
 

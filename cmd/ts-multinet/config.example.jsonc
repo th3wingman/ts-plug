@@ -52,6 +52,12 @@
     //   //                              // (shared Mullvad exit nodes are never selectable)
     //   // "resources": ["host1", "host2"],  // short names exactly as `peers` shows them;
     //   //                                   // usually managed via `select`/`forget` or the web UI
+    //   // "auto_select": ["tag:infra", "svc:prod-*", "tcp:3306"],  // select without listing:
+    //   //                              // tag:<acl-tag> grabs peers carrying the tag,
+    //   //                              // svc:<glob> grabs services by label,
+    //   //                              // tcp:<port> grabs services advertising that port;
+    //   //                              // matches land live as tags/services change
+    //   //                              // (`ts-multinet auto <name> ...` manages them)
     //   // "locked": ["jumpbox"],         // pinned essentials ⊆ resources: survive clear-all,
     //   //                              // refuse forget, and block disabling/removing the
     //   //                              // tailnet — jumpboxes, logging, metrics; unlock to release
@@ -59,6 +65,9 @@
     //   //                               // on the /etc/hosts line, so shell completion
     //   //                               // offers both spellings; DNS resolves either
     //   //                               // way; default false
+    //   // "domain_hosts": true,         // always write /etc/hosts entries as <name>.<domain>;
+    //   //                               // default false: the bare name, qualified only when
+    //   //                               // another tailnet claims the same name
     //   // "auth_key": "tskey-auth-…",  // tagged-device enrollment — node joins without
     //   //                               // a browser (tag comes from the key);
     //   //                               // stored here, redacted in config output

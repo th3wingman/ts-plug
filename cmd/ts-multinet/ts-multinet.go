@@ -39,19 +39,21 @@ type Config struct {
 }
 
 type TailnetConf struct {
-	Name      string   `json:"name"`                 // short id, used for state dir
-	Suffix    string   `json:"suffix"`               // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
-	Domain    string   `json:"domain,omitempty"`     // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
-	CIDR      string   `json:"cidr"`                 // synthetic range, e.g. "198.18.1.0/24"
-	TUN       string   `json:"tun"`                  // TUN device name (<=15 chars)
-	Hostname  string   `json:"hostname,omitempty"`   // node name in the tailnet; default "ts-multinet-<name>"
-	AuthKey   string   `json:"auth_key,omitempty"`   // tskey-auth-… for tagged/automation enrollment (no browser); never sent back by the API
-	Enabled   *bool    `json:"enabled,omitempty"`    // default true
-	AllowAll  bool     `json:"allow_all,omitempty"`  // select every non-Mullvad peer instead of listing resources
-	Resources []string `json:"resources,omitempty"`  // short names to select (hosts entries + synthetic IPs)
-	Locked    []string `json:"locked,omitempty"`     // pinned essentials ⊆ resources: survive clear-all, block disable/remove
-	NativeDNS bool     `json:"native_dns,omitempty"` // also list the native MagicDNS name in the hosts block (completion); DNS resolution is unaffected
-	StateDir  string   `json:"state_dir,omitempty"`
+	Name        string   `json:"name"`                   // short id, used for state dir
+	Suffix      string   `json:"suffix"`                 // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
+	Domain      string   `json:"domain,omitempty"`       // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
+	CIDR        string   `json:"cidr"`                   // synthetic range, e.g. "198.18.1.0/24"
+	TUN         string   `json:"tun"`                    // TUN device name (<=15 chars)
+	Hostname    string   `json:"hostname,omitempty"`     // node name in the tailnet; default "ts-multinet-<name>"
+	AuthKey     string   `json:"auth_key,omitempty"`     // tskey-auth-… for tagged/automation enrollment (no browser); never sent back by the API
+	Enabled     *bool    `json:"enabled,omitempty"`      // default true
+	AllowAll    bool     `json:"allow_all,omitempty"`    // select every non-Mullvad peer instead of listing resources
+	Resources   []string `json:"resources,omitempty"`    // short names to select (hosts entries + synthetic IPs)
+	Locked      []string `json:"locked,omitempty"`       // pinned essentials ⊆ resources: survive clear-all, block disable/remove
+	AutoSelect  []string `json:"auto_select,omitempty"`  // rules that select without listing: tag:<acl-tag> peers, svc:<glob> services
+	NativeDNS   bool     `json:"native_dns,omitempty"`   // also list the native MagicDNS name in the hosts block (completion); DNS resolution is unaffected
+	DomainHosts bool     `json:"domain_hosts,omitempty"` // always write hosts-block entries as <name>.<domain>; default: bare name, qualified only on cross-tailnet collisions
+	StateDir    string   `json:"state_dir,omitempty"`
 }
 
 func (tc TailnetConf) enabled() bool {
@@ -185,6 +187,15 @@ func main() {
 				arg = args[2]
 			}
 			runAllowAllClient(cli, tailnet, arg)
+		case "auto":
+			tailnet, rules := "", []string(nil)
+			if len(args) >= 2 {
+				tailnet = args[1]
+			}
+			if len(args) >= 3 {
+				rules = args[2:]
+			}
+			runAutoClient(cli, tailnet, rules)
 		case "domain":
 			tailnet, arg := "", ""
 			if len(args) >= 2 {
@@ -347,6 +358,8 @@ usage:
   ts-multinet [flags] lock <tailnet> <peer|svc:label>...    pin essentials: survive clear-all, block disable
   ts-multinet [flags] unlock <tailnet> <peer|svc:label>...  release a pin (the selection stays)
   ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
+  ts-multinet [flags] auto <tailnet> [rule...]   show/add auto-select rules; off [rule...] removes (none: clears all)
+                                                 rules: tag:<acl-tag> tagged peers, svc:<glob> services, tcp:<port> services advertising it
   ts-multinet [flags] domain <tailnet> [name|-]     set (or print) the friendly DNS suffix; - clears it
   ts-multinet [flags] hostname <tailnet> [name|-]   set (or print) the node name in the tailnet; - clears it
   ts-multinet [flags] config                        print the effective config
@@ -410,6 +423,13 @@ func parseConfig(b []byte, path string) (*Config, error) {
 		}
 		if len(tc.TUN) > 15 {
 			return nil, fmt.Errorf("tailnet[%d]: tun name %q exceeds 15 chars", i, tc.TUN)
+		}
+		for j, rule := range tc.AutoSelect {
+			norm, err := normalizeAutoRule(rule)
+			if err != nil {
+				return nil, fmt.Errorf("tailnet[%d]: %v", i, err)
+			}
+			tc.AutoSelect[j] = norm // lowercased canonical form — matching assumes it
 		}
 	}
 	return &c, nil

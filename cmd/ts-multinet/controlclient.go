@@ -719,6 +719,64 @@ func runAllowAllClient(c cliOpts, tailnet, arg string) {
 	}
 }
 
+// runAutoClient manages a tailnet's auto-select rules: tag:<acl-tag>
+// selects peers carrying that ACL tag, svc:<glob> selects advertised
+// services whose label matches. Rules stay rules in the config — matches are
+// recomputed on every apply, live on netmap updates. Bare `auto <tailnet>`
+// prints the rules; `off` with no rules clears them all.
+func runAutoClient(c cliOpts, tailnet string, args []string) {
+	if tailnet == "" {
+		fmt.Fprintln(os.Stderr, "usage: ts-multinet auto <tailnet> [rule...] | auto <tailnet> off [rule...]")
+		fmt.Fprintln(os.Stderr, "rules: tag:<acl-tag> — peers carrying the tag; svc:<glob> — services by label; tcp:<port> — services advertising it")
+		os.Exit(1)
+	}
+	off := len(args) > 0 && strings.EqualFold(args[0], "off")
+	if off {
+		args = args[1:]
+	}
+	if len(args) == 0 && !off {
+		var cfg Config
+		if err := controlGet(c.sock, "/config", &cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		tc := confByName(&cfg, tailnet)
+		if tc == nil {
+			var known []string
+			for _, t := range cfg.Tailnets {
+				known = append(known, t.Name)
+			}
+			fmt.Fprintf(os.Stderr, "%s: no such tailnet (known: %s)\n", tailnet, strings.Join(known, ", "))
+			os.Exit(1)
+		}
+		if len(tc.AutoSelect) == 0 {
+			fmt.Printf("auto %s: no rules — add tag:<acl-tag>, svc:<glob>, or tcp:<port>\n", tailnet)
+			return
+		}
+		if c.json {
+			emitJSON(map[string]any{"tailnet": tailnet, "auto_select": tc.AutoSelect})
+			return
+		}
+		fmt.Printf("auto %s: %s\n", tailnet, strings.Join(tc.AutoSelect, ", "))
+		fmt.Println("current matches show as selected in `peers`/`services` output; they land live as tags and services change")
+		return
+	}
+	body := map[string]any{"resources": args}
+	if off {
+		body["on"] = false
+	}
+	r, err := mutate(c.sock, "/tailnet/"+url.PathEscape(tailnet)+"/auto", body)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if c.json {
+		emitJSON(r)
+		return
+	}
+	fmt.Println(r.OK) // the server note names the rules and what they match now
+}
+
 // runDomainClient sets a tailnet's friendly DNS suffix ("-" clears the
 // override); with no argument it prints the effective domain.
 func runDomainClient(c cliOpts, tailnet, arg string) {

@@ -99,28 +99,99 @@ func TestEnabledToggle(t *testing.T) {
 
 // The self-heal decision must not restart a node that never connected (still
 // logging in), must restart one that was online and has gone dark, and must
-// respect the cooldown so a long outage cannot thrash it.
+// respect the cooldown so a long outage cannot thrash it. A forced pass (the
+// network just changed) drops the 90s grace: a once-online node still dark
+// right after the link settled is restarted immediately.
 func TestNeedsRestart(t *testing.T) {
 	now := time.Now()
 
-	if needsRestart(&tailnetHealth{}, false, now) {
+	if needsRestart(&tailnetHealth{}, false, now, false) {
 		t.Error("restart before the node was ever online")
 	}
 	h := &tailnetHealth{everOnline: true, lastOnline: now.Add(-10 * time.Second)}
-	if needsRestart(h, false, now) {
+	if needsRestart(h, false, now, false) {
 		t.Error("restart while healthy")
 	}
 	h = &tailnetHealth{everOnline: true, lastOnline: now.Add(-3 * unhealthyAfter)}
-	if !needsRestart(h, false, now) {
+	if !needsRestart(h, false, now, false) {
 		t.Error("no restart when stuck offline past the grace window")
 	}
 	h = &tailnetHealth{everOnline: true, lastOnline: now}
-	if !needsRestart(h, true, now) {
+	if !needsRestart(h, true, now, false) {
 		t.Error("no restart for a dead forwarder")
 	}
 	h = &tailnetHealth{everOnline: true, lastOnline: now.Add(-time.Hour), lastRestart: now.Add(-time.Minute)}
-	if needsRestart(h, true, now) {
+	if needsRestart(h, true, now, false) {
 		t.Error("restart during the cooldown window")
+	}
+
+	// forced: recent lastOnline is no longer protection, but never-online
+	// still is, and so is the cooldown
+	h = &tailnetHealth{everOnline: true, lastOnline: now.Add(-5 * time.Second)}
+	if !needsRestart(h, false, now, true) {
+		t.Error("no forced restart for a once-online node dark right after a network change")
+	}
+	if needsRestart(&tailnetHealth{}, false, now, true) {
+		t.Error("forced restart of a node that was never online")
+	}
+	h = &tailnetHealth{everOnline: true, lastOnline: now, lastRestart: now.Add(-time.Minute)}
+	if needsRestart(h, false, now, true) {
+		t.Error("forced restart during the cooldown window")
+	}
+}
+
+// The suspend detector: kernel uptime (counts suspend) minus monotonic
+// elapsed (doesn't) is the time spent asleep; jitter must not read as a
+// suspend in either direction.
+func TestSuspendedSince(t *testing.T) {
+	cases := []struct {
+		uptime, monotonic, want time.Duration
+	}{
+		{uptime: 60 * time.Second, monotonic: 60 * time.Second, want: 0},               // awake
+		{uptime: 90 * time.Second, monotonic: 3 * time.Second, want: 87 * time.Second}, // resumed 87s into the sleep
+		{uptime: 59 * time.Second, monotonic: 60 * time.Second, want: 0},               // uptime read a hair early
+	}
+	for _, c := range cases {
+		if got := suspendedSince(c.uptime, c.monotonic); got != c.want {
+			t.Errorf("suspendedSince(%v, %v) = %v, want %v", c.uptime, c.monotonic, got, c.want)
+		}
+	}
+}
+
+// The resume detector's /proc/uptime parser: first field is seconds of
+// CLOCK_BOOTTIME (suspend included); garbage is an error, not a panic.
+func TestParseUptime(t *testing.T) {
+	up, err := parseUptime("123456.78 234567.89\n")
+	if err != nil || up != 123456780*time.Millisecond {
+		t.Fatalf("parseUptime = %v, %v; want 123456.78s", up, err)
+	}
+	if _, err := parseUptime(""); err == nil {
+		t.Error("empty /proc/uptime parsed without error")
+	}
+	if _, err := parseUptime("not-a-number 5\n"); err == nil {
+		t.Error("garbage uptime parsed without error")
+	}
+}
+
+// The route-change detector: default routes (destination 00000000) as
+// comparable text — the header and non-default rows are skipped, rows are
+// sorted so a reorder is not a change, and no default route is "".
+func TestParseDefaultRoutes(t *testing.T) {
+	proc := `Iface	Destination	Gateway	Flags	RefCnt	Use	Metric	Mask	MTU	Window	RTERF
+wlp0s20f3	00000000	0100A8C0	0003	0	0	600	00000000	0	0	0
+wlp0s20f3	0069A8C0	0100A8C0	0003	0	0	600	00FFFFFF	0	0	0
+tsm0	00000000	00000000	0001	0	0	0	00000000	0	0	0
+`
+	got := parseDefaultRoutes(proc)
+	want := "tsm0 00000000\nwlp0s20f3 0100A8C0" // sorted; the 192.168.105.0 row is not default
+	if got != want {
+		t.Errorf("parseDefaultRoutes = %q, want %q", got, want)
+	}
+	if again := parseDefaultRoutes(proc); again != got {
+		t.Errorf("parseDefaultRoutes not stable: %q then %q", got, again)
+	}
+	if got := parseDefaultRoutes("Iface\tDestination\tGateway\n"); got != "" {
+		t.Errorf("no default route = %q, want empty", got)
 	}
 }
 

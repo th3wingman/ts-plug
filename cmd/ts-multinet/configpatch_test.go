@@ -186,6 +186,82 @@ func TestPatchForgetReverses(t *testing.T) {
 	}
 }
 
+func TestPatchAutoSelect(t *testing.T) {
+	path := testConfig(t)
+	prev := mustLoad(t, path)
+	next, _ := cloneConfig(prev)
+	confByName(next, "example").AutoSelect = []string{"tag:infra", "svc:prod-*"}
+	if err := patchConfigFile(path, prev, next); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	got := confByName(mustLoad(t, path), "example")
+	if !slices.Equal(got.AutoSelect, []string{"tag:infra", "svc:prod-*"}) {
+		t.Fatalf("auto_select after patch: %v", got.AutoSelect)
+	}
+
+	// remove one rule, then clear: both must round-trip through the AST and
+	// an emptied list must drop the member entirely
+	cur := mustLoad(t, path)
+	edit, _ := cloneConfig(cur)
+	confByName(edit, "example").AutoSelect = []string{"svc:prod-*"}
+	if err := patchConfigFile(path, cur, edit); err != nil {
+		t.Fatal(err)
+	}
+	cur = mustLoad(t, path)
+	clear, _ := cloneConfig(cur)
+	confByName(clear, "example").AutoSelect = nil
+	if err := patchConfigFile(path, cur, clear); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	if got := confByName(mustLoad(t, path), "example").AutoSelect; len(got) != 0 {
+		t.Fatalf("cleared auto_select survived: %v", got)
+	}
+	if strings.Contains(mustRead(t, path), `"auto_select"`) {
+		t.Errorf("removed auto_select member survived:\n%s", mustRead(t, path))
+	}
+}
+
+func TestPatchNativeAndDomainHosts(t *testing.T) {
+	path := testConfig(t)
+	prev := mustLoad(t, path)
+	next, _ := cloneConfig(prev)
+	tc := confByName(next, "example")
+	tc.NativeDNS = true
+	tc.DomainHosts = true
+	if err := patchConfigFile(path, prev, next); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	got := confByName(mustLoad(t, path), "example")
+	if !got.NativeDNS || !got.DomainHosts {
+		t.Fatalf("native_dns/domain_hosts after patch: %v %v", got.NativeDNS, got.DomainHosts)
+	}
+
+	// Both off again: the members drop, and the round-trip check verifies it —
+	// configsEqual now compares both fields (it used to skip native_dns
+	// entirely, so a failed native_dns patch would have passed silently).
+	cur := mustLoad(t, path)
+	off, _ := cloneConfig(cur)
+	tc = confByName(off, "example")
+	tc.NativeDNS = false
+	tc.DomainHosts = false
+	if err := patchConfigFile(path, cur, off); err != nil {
+		t.Fatal(err)
+	}
+	assertComments(t, path)
+	std, err := hujson.Standardize([]byte(mustRead(t, path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []string{`"native_dns"`, `"domain_hosts"`} {
+		if strings.Contains(string(std), member) {
+			t.Errorf("removed %s survived:\n%s", member, mustRead(t, path))
+		}
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

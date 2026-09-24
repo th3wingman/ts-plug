@@ -96,7 +96,7 @@ The daemon serves a JSON API over a unix socket
 (`/run/ts-multinet/control.sock`) and, on the host, the same API + an embedded
 web UI on a localhost TCP listener (default `127.0.0.1:8123`, knob
 `ui_listen`). `status` / `peers` / `check` / `login` / `reload` /
-`select` / `forget` / `lock` / `unlock` / `allow-all` / `domain` / `config` are thin clients that
+`select` / `forget` / `lock` / `unlock` / `allow-all` / `auto` / `domain` / `config` are thin clients that
 query the **running daemon** — they never spin up their own tsnet stacks
 (which would collide on state locks, `:53`, and authkeys). The mutating verbs
 patch the config file in place via the hujson AST (`configpatch.go`), so
@@ -156,12 +156,15 @@ Everything a fresh session needs to pick this up.
 
 - **Code:** `cmd/ts-multinet/` (one binary). Files: `ts-multinet.go` (main +
   config + subcommand dispatch), `tailnet.go` (per-tailnet bring-up with its
-  own cancelable ctx — teardown-friendly —, status watcher, resolver, pinger,
-  assigned-IP-on-TUN), `forwarder.go` (gVisor stack, TCP forwarder, ICMP
+  own cancelable ctx — teardown-friendly —, status watcher, netmap
+  subscriber (live auto-select re-applies on control pushes), resolver,
+  pinger, assigned-IP-on-TUN), `forwarder.go` (gVisor stack, TCP forwarder, ICMP
   interception, packet pump), `udp.go`, `icmp.go`, `dns.go` (responder +
   synthetic-IP registry + allocator + per-tailnet remove), `resolved.go`
   (per-TUN systemd-resolved registration/revert, applied and reverted live),
-  `selection.go` (selection resolution, identity pins, Mullvad filter),
+  `selection.go` (selection resolution, identity pins, Mullvad filter,
+  auto-select rules — `tag:` peer ACL tags, `svc:` label globs — expanded at
+  every apply),
   `hosts.go` (/etc/hosts managed block), `control.go` (daemon registry + unix
   socket server + mutation endpoints + `syncTailnets`/`stopTailnet` — the
   diff-based runtime tailnet lifecycle every change funnels through),
@@ -253,11 +256,13 @@ The image (alpine) ships a toolbox: `dig`, `curl`, `nc`, `tcpdump`, `jq`, `bash`
 6. **IPv6 synthetic range** (currently A-only; AAAA returns empty NOERROR),
    plus user-defined synthetic ranges.
 7. ~~**CLI selection commands (`select`/`forget`) and a local web UI / tray**~~
-   — **done** for CLI + web UI: `select`/`forget`/`allow-all`/`domain` verbs
-   and an embedded localhost web UI (dashboard, selection, logins, reload) on
-   `ui_listen`. Runtime tailnet add/remove extends this item and is done too:
-   `add`/`remove` (CLI + UI form) drive `syncTailnets`, so every config change
-   applies live — only globals (mtu, dns_listen, state_dir, hosts_file,
-   ui_listen) still restart the service. A tray app remains unexplored.
-   Bare short names on the host (`ping host` without a suffix) would need
-   search-domain decisions per host — still open, arguably part of this item.
+   — **done** for CLI + web UI: `select`/`forget`/`allow-all`/`domain`/`auto`
+   verbs and an embedded localhost web UI (dashboard, selection, logins,
+   reload) on `ui_listen`. Runtime tailnet add/remove extends this item and
+   is done too: `add`/`remove` (CLI + UI form) drive `syncTailnets`, so every
+   config change applies live — only globals (mtu, dns_listen, state_dir,
+   hosts_file, ui_listen) still restart the service. A tray app remains
+   unexplored. Bare short names resolve via the `/etc/hosts` block (it lists
+   them bare, qualifying cross-tailnet collisions with `.<domain>`);
+   container resolv.conf `search` expansion of bare names is still
+   restart-only.
