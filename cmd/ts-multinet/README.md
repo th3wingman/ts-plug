@@ -96,6 +96,7 @@ interface. A hand-written entry (if you prefer files) looks like:
       // "domain": "example",               // friendly DNS suffix (default: the name)
       // "resources": ["host1", "svc:db"],  // peer short names, or svc:<label> services
       // "allow_all": true,                // or: every peer (Mullvad exits never)
+      // "auto_select": ["tag:infra", "svc:prod-*"],  // or: select by rule — see below
     },
   ]
 }
@@ -149,16 +150,47 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   services this node may use appear in `ts-multinet services <tailnet>`. Unlike
   peers, services are not identity-pinned (the `svc:` name is the identity)
   and are never port-probed — the advertised ports are shown as metadata.
+- **Auto-select rules** — `auto_select` selects without listing:
+  `tag:<acl-tag>` grabs every peer carrying that Tailscale ACL tag,
+  `svc:<glob>` every advertised service whose label matches (Tailscale
+  exposes no tags on services, so the label glob *is* the service "tag"),
+  and `tcp:<port>` / `udp:<port>` every service advertising that port —
+  "all MySQL" is just `tcp:3306`, "all SSH" `tcp:22` (the rule must be
+  fully covered by an advertised port range, so a wide rule can't grab a
+  service it doesn't really apply to).
+  Rules stay rules in the config — matches are recomputed on every apply, and
+  a netmap subscription re-applies the moment control pushes a change: tag a
+  device in the admin console (or publish a new service) and it lands on this
+  host without a reload; untag it and it drops out. Tag-matched peers are
+  identity-pinned like explicit selections; `forget` refuses a rule-matched
+  name and names the rule (`ts-multinet auto <tailnet> off <rule>` removes
+  it); `clear` clears the rules along with resources and allow-all. Manage
+  them with `ts-multinet auto <tailnet> [rule...]` / `auto <tailnet> off
+  [rule...]` (bare `off` clears all; bare `auto <tailnet>` lists), the
+  Settings tab's rule chips, or the config file — the verb's reply names what
+  the rules currently match, so a typo'd glob surfaces at write time.
 - **`/etc/hosts` managed block** — every selected resource gets a line between
-  `# ts-multinet begin` / `# ts-multinet end`, pointing both the friendly alias
-  and the full MagicDNS name at the resource's synthetic IP:
+  `# ts-multinet begin` / `# ts-multinet end`, pointing the resource's name at
+  its synthetic IP. Names are written bare by default — like any other
+  /etc/hosts entry, so completion and lookups work with the plain hostname:
 
 ```
-198.18.1.5 nucbox.skynet nucbox.tail523555.ts.net  # ts-multinet (skynet)
+198.18.1.2 m4-deb13-hermes  # ts-multinet (skynet)
+198.18.2.1 falcon-ui        # ts-multinet (msinfra)
+```
+
+  A name two tailnets share is written qualified on both sides — an ambiguous
+  bare name would resolve by file order:
+
+```
+198.18.1.40 sandbox.skynet  # ts-multinet (skynet)
+198.18.2.10 sandbox.msinfra # ts-multinet (msinfra)
 ```
 
   Everything outside the markers is preserved. IPs are allocated in sorted
-  name order, so they're stable across restarts.
+  name order, so they're stable across restarts. The per-tailnet
+  `"domain_hosts"` option (Settings-tab checkbox, or the config) forces the
+  `.<domain>` suffix on every entry — always off by default.
 
 - `tun` names must be ≤15 chars (kernel `IFNAMSIZ`).
 - Non-tailnet DNS is forwarded to the upstream inherited from the original
@@ -181,17 +213,21 @@ layout, hash routes:
 - **Tailnet detail** (`#/tailnet/<name>`) — a breadcrumb back to the overview,
   then **Peers**: name/FQDN filter, a 200-row render cap with a "show all"
   toggle, a **hide inactive** toggle (hides offline peers), per-row selection
-  checkboxes, a **clear all** button (unselects every peer *and* service on the
+  checkboxes, a **tags** column whose chips toggle `tag:` auto-select rules in
+  one click, a **clear all** button (unselects every peer *and* service on the
   tailnet in one write), and a **probe** button that is the *only* path that
   dials ports (the 5s poll never does). **Services**
   (`#/tailnet/<name>/services`): advertised VIP services with their VIP,
-  advertised ports, a name/display filter, selection checkboxes, and
-  **clear all** (ACL-gated; never probed). **Settings**
+  advertised ports — each a one-click `tcp:`/`udp:` auto-select rule toggle
+  ("all MySQL" is one click on `tcp:3306`), a name/display filter, selection
+  checkboxes, and **clear all** (ACL-gated; never probed). **Settings**
   (`#/tailnet/<name>/settings`): domain, hostname, allow-all, resource chips,
-  plus structural **cidr/tun** — applying those restarts just that tailnet
-  (node state and login survive). **restart tailnet** stops and starts the node
-  in place — the manual recovery if an outage left it dark; no re-login. Danger
-  zone removes the tailnet, keeping node state.
+  auto-select rule chips (`tag:x` / `svc:glob` / `tcp:port`, added and removed
+  in place, with the add field autocompleting from the tailnet's live tags,
+  ports, and service names), plus structural **cidr/tun** — applying those
+  restarts just that tailnet (node state and login survive). **restart tailnet**
+  stops and starts the node in place — the manual recovery if an outage left
+  it dark; no re-login. Danger zone removes the tailnet, keeping node state.
 - **Config** (`#/config`) — globals (`mtu`, `dns_listen`, `upstream_dns`,
   `ui_listen`, `hosts_file`) with a needs-restart note on the ones that need
   one, the add-tailnet form (cidr/tun/domain/hostname optional), and a
@@ -231,12 +267,13 @@ Two fallbacks keep it non-fatal:
 Every selected resource still gets its `/etc/hosts` line too — the two paths
 always agree, pointing at the same synthetic IP.
 
-That hosts line lists one spelling per host by default — the friendly alias —
-so shell hostname completion offers a single deterministic name (the same
-short name in two tailnets still disambiguates by domain). The per-tailnet
-`"native_dns"` option (Settings-tab checkbox, or the config) adds the full
-MagicDNS name to the line; DNS resolves both spellings regardless, this only
-changes what completion offers.
+That hosts line lists one spelling per host by default — the bare hostname,
+qualified with `.<domain>` only when another tailnet claims the same name —
+so shell hostname completion offers a single deterministic name. The
+per-tailnet `"domain_hosts"` option (Settings-tab checkbox, or the config)
+forces the suffix always; `"native_dns"` adds the full MagicDNS name to the
+line. DNS resolves every spelling regardless — these options only change
+what /etc/hosts lists.
 
 ## Install
 
@@ -373,6 +410,8 @@ the JSON replies already carry these fields). Multi-peer `select`/`forget`
 with `--json` emit one object per line.
 sudo ts-multinet forget skynet rpi4-sk-01       # stop exposing it
 sudo ts-multinet allow-all msinfra on           # every non-Mullvad peer
+sudo ts-multinet auto skynet tag:infra svc:prod-*   # auto-select by rule (tags / service globs)
+sudo ts-multinet auto skynet off tag:infra      # remove one rule; bare `off` clears all
 sudo ts-multinet domain msinfra                 # print the friendly suffix (set: domain msinfra <name>)
 sudo ts-multinet config                         # effective config, as the daemon sees it
 
@@ -400,9 +439,14 @@ reads as `OPEN (7.2s)`, not a mystery hang.
 a node can get stuck (backend not Running, the control-plane poll never
 completing) or its datapath can die. The daemon watches each tailnet's
 control-plane connectivity and, after ~90s dark (or immediately if the
-datapath died), restarts that node in place — state and login are kept. The
-manual equivalent is `sudo ts-multinet restart <tailnet>` (or the **restart
-tailnet** button on the tailnet's Settings tab in the UI).
+datapath died), restarts that node in place — state and login are kept. A
+resume from suspend or a network switch is detected directly (an uptime jump
+past the wall clock, or the default route changing): once the link settles
+(~15s) dark tailnets are restarted right away instead of waiting out the
+grace window, with a longer pong timeout for cold paths — recovery after
+opening the laptop is ~a minute, not two. The manual equivalent is `sudo
+ts-multinet restart <tailnet>` (or the **restart tailnet** button on the
+tailnet's Settings tab in the UI).
 
 ## Protocols
 
@@ -419,7 +463,9 @@ synthetic-range traffic correctly instead of bouncing off the container's eth0.
 
 - **Name-based only.** Connecting to a literal `100.x` tailnet IP isn't steered
   — that's the overlapping-CGNAT case the synthetic ranges exist to avoid.
-- **Bare short names on the host** (`ping nucbox`) don't expand outside the
-  container — use the alias form (`nucbox.skynet`), which resolves system-wide
-  via systemd-resolved (or `/etc/hosts` without it).
+- **Bare names resolve via the hosts block** — `/etc/hosts` lists them bare
+  (cross-tailnet collisions get the `.<domain>` suffix); the qualified forms
+  (`nucbox.skynet`, `nucbox.tailXXX.ts.net`) resolve system-wide via
+  systemd-resolved (or the hosts block without it). In containers, resolv.conf
+  `search` expands bare names across the tailnets.
 - **IPv4 synthetic only.** AAAA queries return empty so clients fall back to A.

@@ -323,3 +323,31 @@ func TestLoginErrorListsTailnets(t *testing.T) {
 		t.Errorf("login error: %q", res.Error)
 	}
 }
+
+// /domain-hosts is a config-only mutation like /native-dns: it patches the
+// file in place (comments survive) and needs no live tailnet.
+func TestDomainHostsToggle(t *testing.T) {
+	d, cfgPath := stubDaemon(t)
+
+	rec := doReq(t, d, "POST", "/tailnet/dev/domain-hosts", `{"on":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("domain-hosts on: %d %s", rec.Code, rec.Body.String())
+	}
+	if !devConf(t, cfgPath).DomainHosts {
+		t.Fatal("domain_hosts not persisted")
+	}
+	rec = doReq(t, d, "POST", "/tailnet/dev/domain-hosts", `{"on":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("domain-hosts off: %d %s", rec.Code, rec.Body.String())
+	}
+	if devConf(t, cfgPath).DomainHosts {
+		t.Fatal("domain_hosts not cleared")
+	}
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "// comments must survive daemon edits") {
+		t.Errorf("comment lost:\n%s", b)
+	}
+}

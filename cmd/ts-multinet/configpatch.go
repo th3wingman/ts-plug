@@ -99,6 +99,13 @@ func patchConfigFile(path string, prev, next *Config) error {
 					setMember(obj, "native_dns", hujson.Bool(true))
 				}
 			}
+			if o.DomainHosts != n.DomainHosts {
+				if !n.DomainHosts {
+					removeMember(obj, "domain_hosts")
+				} else {
+					setMember(obj, "domain_hosts", hujson.Bool(true))
+				}
+			}
 			if o.AuthKey != n.AuthKey {
 				if n.AuthKey == "" {
 					removeMember(obj, "auth_key")
@@ -133,6 +140,17 @@ func patchConfigFile(path string, prev, next *Config) error {
 						els[j] = hujson.Value{Value: hujson.String(r)}
 					}
 					setMember(obj, "locked", &hujson.Array{Elements: els})
+				}
+			}
+			if !slices.Equal(o.AutoSelect, n.AutoSelect) {
+				if len(n.AutoSelect) == 0 {
+					removeMember(obj, "auto_select")
+				} else {
+					els := make([]hujson.ArrayElement, len(n.AutoSelect))
+					for j, r := range n.AutoSelect {
+						els[j] = hujson.Value{Value: hujson.String(r)}
+					}
+					setMember(obj, "auto_select", &hujson.Array{Elements: els})
 				}
 			}
 		}
@@ -220,8 +238,9 @@ func configsEqual(a, b *Config) bool {
 		if x.Name != y.Name || x.Suffix != y.Suffix || x.Domain != y.Domain ||
 			x.Hostname != y.Hostname ||
 			x.CIDR != y.CIDR || x.TUN != y.TUN || x.AllowAll != y.AllowAll ||
+			x.NativeDNS != y.NativeDNS || x.DomainHosts != y.DomainHosts ||
 			x.StateDir != y.StateDir || !slices.Equal(x.Resources, y.Resources) ||
-			!slices.Equal(x.Locked, y.Locked) {
+			!slices.Equal(x.Locked, y.Locked) || !slices.Equal(x.AutoSelect, y.AutoSelect) {
 			return false
 		}
 		if (x.Enabled == nil) != (y.Enabled == nil) || x.Enabled != nil && *x.Enabled != *y.Enabled {
@@ -347,6 +366,19 @@ func insertTailnetElement(arr *hujson.Array, tc TailnetConf) {
 			els[j] = hujson.Value{Value: hujson.String(r)}
 		}
 		addMember("locked", &hujson.Array{Elements: els})
+	}
+	if len(tc.AutoSelect) > 0 {
+		els := make([]hujson.ArrayElement, len(tc.AutoSelect))
+		for j, r := range tc.AutoSelect {
+			els[j] = hujson.Value{Value: hujson.String(r)}
+		}
+		addMember("auto_select", &hujson.Array{Elements: els})
+	}
+	if tc.NativeDNS {
+		addMember("native_dns", hujson.Bool(true))
+	}
+	if tc.DomainHosts {
+		addMember("domain_hosts", hujson.Bool(true))
 	}
 	obj.AfterExtra = hujson.Extra("\n    ")
 	arr.Elements = append(arr.Elements, hujson.Value{BeforeExtra: hujson.Extra("\n    "), Value: obj})

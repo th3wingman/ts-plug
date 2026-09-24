@@ -19,13 +19,6 @@ func TestServiceNameHelpers(t *testing.T) {
 	if got := serviceFQDN("svc:my-db", ""); got != "my-db" {
 		t.Errorf("serviceFQDN without suffix = %q", got)
 	}
-	// the friendly alias keeps the label, drops the svc: prefix; peers pass through
-	if got := resourceAlias("svc:my-db", "skynet"); got != "my-db.skynet" {
-		t.Errorf("resourceAlias(service) = %q", got)
-	}
-	if got := resourceAlias("nucbox", "skynet"); got != "nucbox.skynet" {
-		t.Errorf("resourceAlias(peer) = %q", got)
-	}
 }
 
 func TestResolveSelectionsServices(t *testing.T) {

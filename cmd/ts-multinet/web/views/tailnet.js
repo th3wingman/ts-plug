@@ -10,6 +10,7 @@ import {
   h,
   state,
   confFor,
+  slug,
   domainOf,
   hostnameOf,
   stateBadge,
@@ -32,8 +33,11 @@ import {
   togglePeer,
   forgetPeer,
   clearSelections,
+  addAutoRule,
+  removeAutoRule,
   restartTailnet,
   setNativeDNS,
+  setDomainHosts,
   setAuthKey,
   setEnabled,
   peerCols,
@@ -56,6 +60,7 @@ const PEER_COLS = [
   ["os", "os"],
   ["state", "state"],
   ["services", "services"],
+  ["tags", "tags"],
 ];
 
 // services-table columns, same mechanism (svcCols in shared.js).
@@ -177,6 +182,7 @@ function statsStrip(s, tc, name) {
   const advertised =
     state.services.find((x) => x.name === name)?.services?.length || 0;
   const configured = (tc.resources || []).length;
+  const autoRules = (tc.auto_select || []).length > 0;
   const live = s.selected ?? 0;
   // DNS and the hosts block only exist for a running node: report them
   // neutrally otherwise rather than crying wolf about \"not registered\".
@@ -197,11 +203,16 @@ function statsStrip(s, tc, name) {
         "span",
         {
           class: "fact__value",
-          title: stale
-            ? `${configured - live} configured resource(s) are not in the hosts block`
-            : "",
+          title: [
+            stale
+              ? `${configured - live} configured resource(s) are not in the hosts block`
+              : "",
+            autoRules ? "auto-select rules may select beyond the explicit list" : "",
+          ]
+            .filter(Boolean)
+            .join(" — "),
         },
-        `${live}/${configured}`,
+        `${live}/${configured}${autoRules ? "+" : ""}`,
       ),
     ),
   );
@@ -297,15 +308,62 @@ export function renderTailnet(root, name, tab) {
   return true;
 }
 
+// One-click rule toggles: the tag/port text shown in a row IS the rule —
+// click adds it (every matching resource lands live), click again removes
+// it. Same rules the Settings chips and `ts-multinet auto` manage.
+const ruleChip = (tc, name, rule) => {
+  const on = (tc.auto_select || []).includes(rule);
+  return h(
+    "button",
+    {
+      class: "chip chip--rule" + (on ? " is-on" : ""),
+      type: "button",
+      title: on
+        ? `remove rule ${rule} — stops auto-selecting what it matches`
+        : `auto-select everything matching ${rule}`,
+      onclick: () => (on ? removeAutoRule(name, rule) : addAutoRule(name, rule)),
+    },
+    rule,
+  );
+};
+
+// ruleSuggestions feeds the add-rule input's native autocomplete (datalist):
+// every tag, advertised port, and service name visible on this tailnet —
+// the rules the data supports, not a hardcoded list.
+const ruleSuggestions = (name, tc) => {
+  const seen = new Set(tc.auto_select || []);
+  const out = [];
+  const push = (r) => {
+    if (!seen.has(r)) {
+      seen.add(r);
+      out.push(r);
+    }
+  };
+  for (const tp of state.peers) {
+    if (tp.name !== name) continue;
+    for (const p of tp.peers || []) for (const t of p.tags || []) push(t);
+  }
+  for (const ts of state.services) {
+    if (ts.name !== name) continue;
+    for (const s of ts.services || []) {
+      for (const p of s.ports || []) if (/^(tcp|udp):/.test(p)) push(p);
+      push(s.name); // svc:label — an exact-name rule, same as selecting it
+    }
+  }
+  return out.slice(0, 60);
+};
+
 // --- peers --------------------------------------------------------------------
 
 function renderPeers(root, name, s, tc) {
   const tp = state.peers.find((p) => p.name === name);
   const peers = tp?.peers || [];
   const locked = new Set(tc.locked || []);
-  // locked essentials are always selected — the union also covers a
-  // hand-edited config that lists a lock without the matching resource
-  const selected = new Set([...(tc.resources || []), ...(tc.locked || [])]);
+  // the server computes the effective selection (resources ∪ locked ∪
+  // allow_all ∪ auto rules) — same union resolveSelections applies — so the
+  // checkbox can't disagree with the hosts block. `explicit` distinguishes
+  // a rule-matched row (forget refuses; explains itself) from a listed one.
+  const explicit = new Set([...(tc.resources || []), ...(tc.locked || [])]);
 
   const count = h("span", { class: "hint" });
   const tbody = h("tbody");
@@ -352,7 +410,13 @@ function renderPeers(root, name, s, tc) {
           : h("input", {
               type: "checkbox",
               "aria-label": "select " + p.name,
-              ...(selected.has(p.name) ? { checked: true } : {}),
+              ...(p.selected ? { checked: true } : {}),
+              ...(p.selected && !explicit.has(p.name)
+                ? {
+                    title:
+                      "auto-selected by a rule — remove it under Settings → auto select",
+                  }
+                : {}),
               onchange: (e) => togglePeer(name, p.name, e.target.checked),
             });
       const services =
@@ -369,6 +433,16 @@ function renderPeers(root, name, s, tc) {
       if (cols.os) row.append(h("td", {}, p.os || ""));
       if (cols.state) row.append(h("td", {}, p.online ? "up" : "down"));
       if (cols.services) row.append(h("td", {}, services));
+      if (cols.tags)
+        row.append(
+          h(
+            "td",
+            { class: "cell-chips" },
+            ...((p.tags || []).length
+              ? p.tags.map((t) => ruleChip(tc, name, t))
+              : ["—"]),
+          ),
+        );
       tbody.append(row);
     }
 
@@ -407,7 +481,7 @@ function renderPeers(root, name, s, tc) {
         ),
       );
     }
-    const sel = peers.filter((p) => selected.has(p.name)).length;
+    const sel = peers.filter((p) => p.selected).length;
     count.textContent = `${hit.length} shown · ${sel} selected · ${tp?.up ?? 0} up of ${peers.length}`;
   };
 
@@ -553,8 +627,10 @@ function renderServices(root, name, s, tc) {
   const tp = state.services.find((x) => x.name === name);
   const services = tp?.services || [];
   const locked = new Set(tc.locked || []);
-  // same union as renderPeers: locked essentials count as selected
-  const selected = new Set([...(tc.resources || []), ...(tc.locked || [])]);
+  // server-side effective selection (resources ∪ locked ∪ auto rules) —
+  // allow_all never selects services, so no allow-all branch here; the
+  // auto-rule title explains why forget may refuse on a rule-matched row
+  const explicit = new Set([...(tc.resources || []), ...(tc.locked || [])]);
   const tbody = h("tbody");
   const count = h("span", { class: "hint" });
   const theadRow = h("tr", {}); // rebuilt per render — column visibility can change
@@ -578,27 +654,26 @@ function renderServices(root, name, s, tc) {
     const hit = services.filter(matches);
 
     for (const svc of hit) {
-      const box = tc.allow_all
+      const box = locked.has(svc.name)
         ? h("input", {
             type: "checkbox",
             checked: true,
             disabled: true,
-            title: "allow-all selects every peer",
+            title: "locked — unlock to unselect",
+            "aria-label": "select " + svc.name,
           })
-        : locked.has(svc.name)
-          ? h("input", {
-              type: "checkbox",
-              checked: true,
-              disabled: true,
-              title: "locked — unlock to unselect",
-              "aria-label": "select " + svc.name,
-            })
-          : h("input", {
-              type: "checkbox",
-              "aria-label": "select " + svc.name,
-              ...(selected.has(svc.name) ? { checked: true } : {}),
-              onchange: (e) => togglePeer(name, svc.name, e.target.checked),
-            });
+        : h("input", {
+            type: "checkbox",
+            "aria-label": "select " + svc.name,
+            ...(svc.selected ? { checked: true } : {}),
+            ...(svc.selected && !explicit.has(svc.name)
+              ? {
+                  title:
+                    "auto-selected by a rule — remove it under Settings → auto select",
+                }
+              : {}),
+            onchange: (e) => togglePeer(name, svc.name, e.target.checked),
+          });
       const cell = h("td", {}, box);
       lockCell(cell, name, svc.name, locked.has(svc.name));
       testCell(cell, svcHost(svc, s, tc), svcPort(svc));
@@ -607,7 +682,17 @@ function renderServices(root, name, s, tc) {
       if (cols.display) row.append(h("td", {}, svc.display_name || "—"));
       if (cols.vip) row.append(h("td", {}, (svc.vips || []).join(", ") || "—"));
       if (cols.ports)
-        row.append(h("td", {}, (svc.ports || []).join(" ") || "—"));
+        row.append(
+          h(
+            "td",
+            { class: "cell-chips" },
+            ...((svc.ports || []).length
+              ? svc.ports.map((p) =>
+                  /^(tcp|udp):/.test(p) ? ruleChip(tc, name, p) : p,
+                )
+              : ["—"]),
+          ),
+        );
       tbody.append(row);
     }
 
@@ -621,7 +706,7 @@ function renderServices(root, name, s, tc) {
         h("tr", {}, h("td", { colspan: "" + span, class: "empty" }, note)),
       );
     }
-    const sel = services.filter((x) => selected.has(x.name)).length;
+    const sel = services.filter((x) => x.selected).length;
     count.textContent = `${hit.length} shown · ${sel} selected`;
   };
 
@@ -806,6 +891,20 @@ function renderSettings(root, name, s, tc) {
           }),
           " native MagicDNS name in hosts block",
         ),
+        h(
+          "label",
+          {
+            class: "switch",
+            title:
+              "host entries are bare names by default; a name two tailnets share is qualified automatically — this forces the .<domain> suffix always",
+          },
+          h("input", {
+            type: "checkbox",
+            ...(tc.domain_hosts ? { checked: true } : {}),
+            onchange: (e) => setDomainHosts(name, e.target.checked),
+          }),
+          " domain suffix on host entries",
+        ),
       ),
     ),
     infoRow("node ip", s?.assigned_ip),
@@ -869,6 +968,64 @@ function renderSettings(root, name, s, tc) {
             { class: "field__value" },
             "none — select peers on the Peers tab",
           ),
+    ),
+    h(
+      "div",
+      { class: "field" },
+      h("span", { class: "field__label" }, "auto select"),
+      (tc.auto_select || []).length
+        ? h(
+            "div",
+            { class: "chips" },
+            ...tc.auto_select.map((rule) =>
+              h(
+                "span",
+                { class: "chip" },
+                rule,
+                h(
+                  "button",
+                  {
+                    class: "chip__x",
+                    type: "button",
+                    title: "remove rule " + rule,
+                    onclick: () => removeAutoRule(name, rule),
+                  },
+                  "×",
+                ),
+              ),
+            ),
+          )
+        : h(
+            "span",
+            { class: "field__value" },
+            "no rules — tag:<acl-tag>, svc:<glob>, or tcp:<port>",
+          ),
+    ),
+    fieldRow(
+      "add rule",
+      textInput("", {
+        class: "input",
+        placeholder: "tag:infra, svc:prod-*, or tcp:3306",
+        list: `tsm-rules-${slug(name)}`,
+      }),
+      (e) => {
+        const input = e.target
+          .closest(".field__control")
+          .querySelector("input");
+        const rule = input.value.trim();
+        if (rule) {
+          addAutoRule(name, rule);
+          input.value = "";
+        }
+      },
+      {
+        note: "auto rules select without listing: tag:x grabs peers carrying that ACL tag, svc:glob grabs services by label, tcp:port grabs every service advertising that port (mysql = tcp:3306) — matches land live as tags and services change, and clear-all removes the rules too",
+      },
+    ),
+    h(
+      "datalist",
+      { id: `tsm-rules-${slug(name)}` },
+      ...ruleSuggestions(name, tc).map((s) => h("option", { value: s })),
     ),
   );
 

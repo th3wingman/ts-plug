@@ -210,6 +210,33 @@ export async function setAllowAll(name, on) {
   refresh();
 }
 
+// Auto-select rules are managed like the other selection knobs: one write per
+// change; the server's ok text names the rules and what they currently match.
+export async function addAutoRule(name, rule) {
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/auto`, {
+      resources: [rule],
+    });
+    msg(name, { kind: "ok", text: res.ok || "rule added" });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
+export async function removeAutoRule(name, rule) {
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/auto`, {
+      on: false,
+      resources: [rule],
+    });
+    msg(name, { kind: "ok", text: res.ok || "rule removed" });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
 export async function setDomain(name, value) {
   try {
     const res = await post(`/tailnet/${encodeURIComponent(name)}/domain`, {
@@ -337,7 +364,7 @@ export async function forgetPeer(name, peer) {
 export async function clearSelections(name) {
   if (
     !window.confirm(
-      `clear all selections on "${name}"? unlocked peers and services stop resolving from this host — locked essentials are kept`,
+      `clear all selections on "${name}"? unlocked peers and services stop resolving from this host — locked essentials are kept, auto-select rules are removed`,
     )
   )
     return;
@@ -379,6 +406,24 @@ export async function setNativeDNS(name, on) {
       text: on
         ? "native MagicDNS name in the hosts block — completion offers both spellings"
         : "friendly name only — completion offers <host>.<domain>",
+    });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  refresh();
+}
+
+// setDomainHosts forces the .<domain> suffix on every hosts-block entry for
+// this tailnet. Default off: entries are the bare hostname (a name two
+// tailnets share is qualified automatically); DNS resolution is unaffected.
+export async function setDomainHosts(name, on) {
+  try {
+    await post(`/tailnet/${encodeURIComponent(name)}/domain-hosts`, { on });
+    msg(name, {
+      kind: "ok",
+      text: on
+        ? "host entries now always carry .<domain>"
+        : "host entries bare again (a name two tailnets share still gets qualified)",
     });
   } catch (e) {
     errMsg(name, e.message);
@@ -453,6 +498,7 @@ const PEERS_COLS_DEFAULT = {
   os: true,
   state: true,
   services: true,
+  tags: true,
 };
 export function peerCols() {
   return readCols(PEERS_COLS_KEY, PEERS_COLS_DEFAULT);
