@@ -20,7 +20,7 @@ import (
 // name. IFF_NO_PI means each read/write is a bare IP packet (no 4-byte prefix),
 // which is exactly what gVisor's link endpoint wants.
 func openTUN(name string) (*os.File, string, error) {
-	fd, err := unix.Open("/dev/net/tun", os.O_RDWR|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open("/dev/net/tun", os.O_RDWR|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, "", fmt.Errorf("open /dev/net/tun: %w", err)
 	}

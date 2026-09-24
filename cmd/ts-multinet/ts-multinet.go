@@ -39,21 +39,22 @@ type Config struct {
 }
 
 type TailnetConf struct {
-	Name        string   `json:"name"`                   // short id, used for state dir
-	Suffix      string   `json:"suffix"`                 // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
-	Domain      string   `json:"domain,omitempty"`       // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
-	CIDR        string   `json:"cidr"`                   // synthetic range, e.g. "198.18.1.0/24"
-	TUN         string   `json:"tun"`                    // TUN device name (<=15 chars)
-	Hostname    string   `json:"hostname,omitempty"`     // node name in the tailnet; default "ts-multinet-<name>"
-	AuthKey     string   `json:"auth_key,omitempty"`     // tskey-auth-… for tagged/automation enrollment (no browser); never sent back by the API
-	Enabled     *bool    `json:"enabled,omitempty"`      // default true
-	AllowAll    bool     `json:"allow_all,omitempty"`    // select every non-Mullvad peer instead of listing resources
-	Resources   []string `json:"resources,omitempty"`    // short names to select (hosts entries + synthetic IPs)
-	Locked      []string `json:"locked,omitempty"`       // pinned essentials ⊆ resources: survive clear-all, block disable/remove
-	AutoSelect  []string `json:"auto_select,omitempty"`  // rules that select without listing: tag:<acl-tag> peers, svc:<glob> services
-	NativeDNS   bool     `json:"native_dns,omitempty"`   // also list the native MagicDNS name in the hosts block (completion); DNS resolution is unaffected
-	DomainHosts bool     `json:"domain_hosts,omitempty"` // always write hosts-block entries as <name>.<domain>; default: bare name, qualified only on cross-tailnet collisions
-	StateDir    string   `json:"state_dir,omitempty"`
+	Name          string   `json:"name"`                     // short id, used for state dir
+	Suffix        string   `json:"suffix"`                   // MagicDNS suffix, e.g. "skynet.ts.net"; auto-detected when empty
+	Domain        string   `json:"domain,omitempty"`         // friendly DNS suffix, e.g. "skynet"; default: the tailnet name
+	CIDR          string   `json:"cidr"`                     // synthetic range, e.g. "198.18.1.0/24"
+	TUN           string   `json:"tun"`                      // TUN device name (<=15 chars)
+	Hostname      string   `json:"hostname,omitempty"`       // node name in the tailnet; default "ts-multinet-<name>"
+	AuthKey       string   `json:"auth_key,omitempty"`       // tskey-auth-… for tagged/automation enrollment (no browser); never sent back by the API
+	Enabled       *bool    `json:"enabled,omitempty"`        // default true
+	ReportPosture bool     `json:"report_posture,omitempty"` // opt-in hardware identity reporting to this tailnet
+	AllowAll      bool     `json:"allow_all,omitempty"`      // select every non-Mullvad peer instead of listing resources
+	Resources     []string `json:"resources,omitempty"`      // short names to select (hosts entries + synthetic IPs)
+	Locked        []string `json:"locked,omitempty"`         // pinned essentials ⊆ resources: survive clear-all, block disable/remove
+	AutoSelect    []string `json:"auto_select,omitempty"`    // rules that select without listing: tag:<acl-tag> peers, svc:<glob> services
+	NativeDNS     bool     `json:"native_dns,omitempty"`     // also list the native MagicDNS name in the hosts block (completion); DNS resolution is unaffected
+	DomainHosts   bool     `json:"domain_hosts,omitempty"`   // always write hosts-block entries as <name>.<domain>; default: bare name, qualified only on cross-tailnet collisions
+	StateDir      string   `json:"state_dir,omitempty"`
 }
 
 func (tc TailnetConf) enabled() bool {
@@ -365,7 +366,7 @@ usage:
   ts-multinet [flags] config                        print the effective config
   ts-multinet [flags] add <name> [cidr tun]         add a tailnet live (cidr/tun auto-picked when omitted)
   ts-multinet [flags] login <tailnet> [authkey]     with a key: tagged enrollment, no browser; without: prints a login URL
-  ts-multinet [flags] remove <name>                 stop a tailnet and drop it from config (node state kept)
+  ts-multinet [flags] remove <name>                 permanently delete a tailnet, its local keys, selections and settings
   ts-multinet [flags] enable <tailnet>              start a disabled tailnet (node state kept — no re-login)
   ts-multinet [flags] disable <tailnet>             stop a tailnet without unprovisioning (state kept)
 

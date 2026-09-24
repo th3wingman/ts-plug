@@ -243,7 +243,7 @@ func TestAuthKeyRedactedAndSurvives(t *testing.T) {
 // Adding a tailnet with an auth key stores it (one-step tagged enrollment)
 // and the response must not echo the key back.
 func TestAddTailnetWithAuthKey(t *testing.T) {
-	d, cfgPath := stubDaemon(t)
+	d, cfgPath, _ := syncDaemon(t)
 	rec := doReq(t, d, "POST", "/tailnet", `{"name":"acme","auth_key":"tskey-auth-k3"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("add = %d %s", rec.Code, rec.Body.String())

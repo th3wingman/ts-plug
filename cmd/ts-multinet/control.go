@@ -114,6 +114,9 @@ type Daemon struct {
 	// control tests can stub the live tsnet status.
 	peerShorts func(ctx context.Context, tn *Tailnet) ([]string, error)
 
+	// Click-only posture preview; swappable so tests never read real identifiers.
+	postureIdentity func() postureIdentityJSON
+
 	// services is the live advertised-service discovery. A field so control
 	// tests can stub the service list the way they stub peerShorts.
 	services func(ctx context.Context, tn *Tailnet) (map[tailcfg.ServiceName]tailcfg.ServiceDetails, error)
@@ -220,7 +223,7 @@ func (d *Daemon) syncTailnets(cfg *Config) error {
 	// Stop pass: gone from config, disabled, or structurally changed.
 	for _, tn := range d.liveTailnets() {
 		tc, want := wantByName[strings.ToLower(tn.conf.Name)]
-		if !want || !tc.enabled() || tn.conf.CIDR != tc.CIDR || tn.conf.TUN != tc.TUN || tn.conf.Hostname != tc.Hostname {
+		if !want || !tc.enabled() || tn.conf.CIDR != tc.CIDR || tn.conf.TUN != tc.TUN || tn.conf.Hostname != tc.Hostname || tn.conf.ReportPosture != tc.ReportPosture {
 			d.stopTailnet(tn)
 			continue
 		}
@@ -322,25 +325,38 @@ func (d *Daemon) spawnTUNRetry(tc TailnetConf) {
 				return
 			case <-time.After(wait):
 			}
-			if !d.tailnetInConfig(tc.Name) {
-				return // removed from config while we waited
-			}
-			d.mu.Lock()
-			running := d.tailnetByName(tc.Name) != nil
-			d.mu.Unlock()
-			if running {
-				return // a sync started it meanwhile
-			}
-			if err := d.startOne(tc); err == nil {
-				d.applySelections()
-				slog.Info("tailnet started after busy retry", "name", tc.Name, "tun", tc.TUN)
+			// Serialize with disable/reset and reload the current config: the
+			// captured conf may contain an old enrollment key or enabled flag.
+			if done, err := d.retryTailnet(tc.Name); done {
 				return
-			} else {
-				slog.Warn("tun name still busy, background retry scheduled", "name", tc.Name, "tun", tc.TUN, "err", err)
+			} else if err != nil {
+				slog.Warn("tailnet background retry failed", "name", tc.Name, "err", err)
 			}
 		}
 		slog.Warn("tun name stayed busy; retried again on the next config change or `reload`", "name", tc.Name, "tun", tc.TUN)
 	}()
+}
+
+func (d *Daemon) retryTailnet(name string) (done bool, err error) {
+	d.cfgMu.Lock()
+	defer d.cfgMu.Unlock()
+	cfg, err := loadConfig(d.cfgPath)
+	if err != nil {
+		return false, err
+	}
+	tc := confByName(cfg, name)
+	d.mu.Lock()
+	running := d.tailnetByName(name) != nil
+	d.mu.Unlock()
+	if tc == nil || !tc.enabled() || running {
+		return true, nil
+	}
+	if err := d.startOne(*tc); err != nil {
+		return false, err
+	}
+	d.applySelections()
+	slog.Info("tailnet started after busy retry", "name", tc.Name, "tun", tc.TUN)
+	return true, nil
 }
 
 // startWithTUNRetry retries a start whose TUN name is briefly held: the
@@ -361,8 +377,8 @@ func startWithTUNRetry(starter func(context.Context, TailnetConf, *registry, uin
 
 // stopTailnet tears one tailnet down: out of the list, resolved reverted
 // while its TUN still exists, registry scrubbed, then goroutines + TUN +
-// tsnet. Node state (login identity, selection pins) is kept — a re-add
-// comes back up Running without a new browser login.
+// tsnet. Stop alone keeps state for disable/restart; deletion purges it only
+// after this teardown has finished.
 func (d *Daemon) stopTailnet(tn *Tailnet) {
 	d.mu.Lock()
 	d.tailnets = slices.DeleteFunc(d.tailnets, func(t *Tailnet) bool { return t == tn })
@@ -665,8 +681,11 @@ func (d *Daemon) controlMux() *http.ServeMux {
 	mux.HandleFunc("POST /tailnet/{name}/domain-hosts", d.handleDomainHosts)
 	mux.HandleFunc("POST /tailnet/{name}/authkey", d.handleAuthKey)
 	mux.HandleFunc("POST /tailnet/{name}/enabled", d.handleEnabled)
+	mux.HandleFunc("POST /tailnet/{name}/report-posture", d.handleReportPosture)
+	mux.HandleFunc("GET /tailnet/{name}/posture-preview", d.handlePosturePreview)
 	mux.HandleFunc("POST /tailnet/{name}/clear", d.handleClear)
 	mux.HandleFunc("POST /tailnet/{name}/restart", d.handleRestart)
+	mux.HandleFunc("POST /tailnet/{name}/reset-identity", d.handleResetIdentity)
 	mux.HandleFunc("POST /tailnet/{name}/domain", d.handleDomain)
 	mux.HandleFunc("POST /tailnet/{name}/hostname", d.handleHostname)
 	mux.HandleFunc("POST /tailnet/{name}/cidr", d.handleCIDR)
@@ -1916,6 +1935,44 @@ func (d *Daemon) handleEnabled(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleReportPosture changes consent without requiring a working peer/status
+// query. syncTailnets restarts only this node to apply the preference, keeping
+// its identity; disabled nodes stay disabled and apply it on their next start.
+func (d *Daemon) handleReportPosture(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		On *bool `json:"on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.On == nil {
+		writeErr(w, http.StatusBadRequest, "body must be {\"on\": true|false}")
+		return
+	}
+	notice, err := d.applyConfigUpdate(func(c *Config) error {
+		tc := confByName(c, r.PathValue("name"))
+		if tc == nil {
+			return clientError{"no such tailnet"}
+		}
+		tc.ReportPosture = *req.On
+		return nil
+	})
+	if err != nil {
+		var ce clientError
+		if errors.As(err, &ce) {
+			writeErr(w, http.StatusNotFound, ce.msg)
+		} else {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	ok := "device posture reporting disabled; previously collected identifiers and integration attributes may remain in the admin console"
+	if *req.On {
+		ok = "device posture reporting enabled for this tailnet; enable Device Identity Collection and the Fleet integration in its admin console, then wait for sync"
+	}
+	if notice != "" {
+		ok += "; " + notice
+	}
+	writeJSON(w, map[string]string{"ok": ok})
+}
+
 // handleNativeDNS toggles whether this tailnet's native MagicDNS name
 // (host.tailXXXX.ts.net) is ALSO written to the /etc/hosts managed block.
 // DNS resolution is untouched — the responder and the resolved routing domains
@@ -2215,55 +2272,6 @@ func (d *Daemon) handleAddTailnet(w http.ResponseWriter, r *http.Request) {
 		res["ok"] += "; " + notice
 	}
 	writeJSON(w, res)
-}
-
-// handleRemoveTailnet stops a tailnet and drops it from the config. Node
-// state (login identity, selection pins) is kept under state_dir, so a later
-// re-add comes back up Running without a new browser login — deleting state
-// is a manual rm.
-func (d *Daemon) handleRemoveTailnet(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	// locked essentials block removal the same way they block disable — the
-	// whole tailnet (config, hosts entries, DNS) going away is the bigger loss
-	if tc := d.confFor(name); len(tc.Locked) > 0 {
-		writeErr(w, http.StatusConflict, fmt.Sprintf("tailnet %q has locked selections (%s) — unlock them first", name, strings.Join(tc.Locked, ", ")))
-		return
-	}
-	if _, err := func() (*TailnetConf, error) {
-		d.cfgMu.Lock()
-		defer d.cfgMu.Unlock()
-		cfg, err := loadConfig(d.cfgPath)
-		if err != nil {
-			return nil, err
-		}
-		if confByName(cfg, name) == nil {
-			return nil, clientError{fmt.Sprintf("no such tailnet %q", name)}
-		}
-		return nil, nil
-	}(); err != nil {
-		var ce clientError
-		if errors.As(err, &ce) {
-			writeErr(w, http.StatusNotFound, ce.msg)
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	notice, err := d.applyConfigUpdate(func(c *Config) error {
-		c.Tailnets = slices.DeleteFunc(c.Tailnets, func(tc TailnetConf) bool {
-			return strings.EqualFold(tc.Name, name)
-		})
-		return nil
-	})
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	ok := "tailnet stopped and removed from config (node state kept)"
-	if notice != "" {
-		ok += "; " + notice
-	}
-	writeJSON(w, map[string]string{"ok": ok})
 }
 
 // syntheticRange is the RFC 2544 benchmark space every per-tailnet range is

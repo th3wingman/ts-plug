@@ -1,5 +1,4 @@
-// overview.js — the read-only landing: daemon line + one summary row per
-// tailnet. Every row links into the tailnet detail; no actions live here.
+// overview.js — summary rows with detail links and enable/disable actions.
 
 import {
   h,
@@ -10,6 +9,7 @@ import {
   stateBadge,
   dnsDot,
   msgEl,
+  enabledButton,
 } from "./shared.js";
 
 export function renderOverview(root) {
@@ -72,35 +72,45 @@ export function renderOverview(root) {
     const advertised = svcCount(s.name);
     rows.append(
       h(
-        "a",
-        { class: "row", href: `#/tailnet/${encodeURIComponent(s.name)}` },
+        "div",
+        { class: "row" },
         h(
-          "div",
-          { class: "row__main" },
-          h("span", { class: "row__name" }, s.name),
-          stateBadge(s.state),
-        ),
-        h(
-          "div",
-          { class: "row__facts" },
-          fact("suffix", s.suffix || "(detecting)"),
-          fact("domain", domainOf(tc)),
-          fact("hostname", s.hostname || hostnameOf(tc)),
-          fact("node ip", s.assigned_ip || "—"),
-          fact("peers", `${s.up} up / ${s.peers} total`),
-          fact("services", String(advertised)),
-          fact("selected", String(s.selected ?? 0)),
-        ),
-        h(
-          "div",
-          { class: "row__side" },
+          "a",
+          { class: "row__link", href: `#/tailnet/${encodeURIComponent(s.name)}` },
           h(
-            "span",
-            { class: "row__dns" },
-            dnsDot(s.dns_registered),
-            h("span", { class: "hint" }, "dns"),
+            "div",
+            { class: "row__main" },
+            h("span", { class: "row__name" }, s.name),
+            stateBadge(s.state),
           ),
-          h("span", { class: "row__chev", title: `open ${s.name}` }, "→"),
+          h(
+            "div",
+            { class: "row__facts" },
+            fact("suffix", s.suffix || (tc.enabled === false ? "—" : "(detecting)")),
+            fact("domain", domainOf(tc)),
+            fact("hostname", s.hostname || hostnameOf(tc)),
+            fact("node ip", s.assigned_ip || "—"),
+            fact("peers", `${s.up} up / ${s.peers} total`),
+            fact("services", String(advertised)),
+            fact("selected", String(s.selected ?? 0)),
+          ),
+          h(
+            "div",
+            { class: "row__side" },
+            h(
+              "span",
+              { class: "row__dns" },
+              dnsDot(s.state === "Running" ? s.dns_registered : undefined),
+              h("span", { class: "hint" }, "dns"),
+            ),
+            h("span", { class: "row__chev", title: `open ${s.name}` }, "→"),
+          ),
+        ),
+        enabledButton(s.name),
+        state.msgs[s.name] && h(
+          "div",
+          { class: "row__message", role: "status" },
+          msgEl(state.msgs[s.name]),
         ),
       ),
     );

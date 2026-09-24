@@ -84,9 +84,8 @@ a:hover {
 
 main {
   padding: 20px;
-  max-width: 1080px;
-  margin: 0 auto;
-  overflow-x: auto; // a wide table scrolls inside main instead of breaking the page
+  width: 100%;
+  min-width: 0;
 }
 
 /* buttons */
@@ -120,6 +119,14 @@ main {
 }
 .btn--danger:hover {
   border-color: var(--err);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 /* badges, dots, messages */
@@ -208,6 +215,7 @@ code {
 }
 .row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
   padding: 12px 16px;
@@ -216,9 +224,23 @@ code {
   border-radius: 10px;
   color: var(--text);
 }
+.row:focus-within,
 .row:hover {
   border-color: var(--accent);
+}
+.row__link {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+  color: inherit;
+}
+.row__link:hover {
   text-decoration: none;
+}
+.row__message {
+  flex-basis: 100%;
 }
 .row__main {
   display: flex;
@@ -248,6 +270,7 @@ code {
 .fact__value {
   font-family: var(--mono);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 .row__side {
   display: flex;
@@ -376,8 +399,14 @@ th {
 td {
   font-family: var(--mono);
 }
-td:not(:has(input)) {
+td {
   white-space: nowrap;
+}
+td:has(input) {
+  width: 1%;
+}
+td:has(input) .btn {
+  margin-left: 6px;
 }
 /* the FQDN column is the wide one — cap it so the peers table fits a laptop
    screen at the UI font size; hovering a cell unwraps the full value */
@@ -393,11 +422,9 @@ td.col-fqdn:hover {
   word-break: break-all;
 }
 
-/* long lists scroll inside the page instead of pushing it past the
-   viewport; the header stays put while rows scroll under it */
+/* Only wide tables scroll internally; long lists use the browser scrollbar. */
 .table-wrap {
-  overflow: auto;
-  max-height: calc(100vh - 250px);
+  overflow-x: auto;
 }
 .table-wrap thead th {
   position: sticky;
@@ -481,6 +508,7 @@ tbody tr:hover {
   gap: 8px;
   flex: 1;
   min-width: 260px;
+  flex-wrap: wrap;
 }
 .field__value {
   font-family: var(--mono);
@@ -501,9 +529,13 @@ tbody tr:hover {
 .input:focus {
   outline: 1px solid var(--accent);
 }
-.field .hint {
+.field > .hint {
   flex-basis: 100%;
   margin: 0 0 0 142px;
+}
+.field__control > .hint {
+  flex: 1 1 280px;
+  margin: 0;
 }
 
 .switch {
@@ -548,9 +580,14 @@ tbody tr:hover {
 
 /* one-click rule toggles in table cells: the tag/port text IS the rule */
 .cell-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  white-space: normal;
+  min-width: 180px;
+}
+.cell-chips .chip {
+  margin: 2px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 .chip--rule {
   cursor: pointer;
@@ -580,4 +617,34 @@ details.panel pre {
   font-size: 13px;
   overflow-x: auto;
   margin: 12px 0 0;
+}
+
+@media (max-width: 760px) {
+  main {
+    padding: 16px;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    padding: 10px 16px;
+  }
+  .row__link {
+    flex-direction: column;
+    align-items: flex-start;
+    flex-basis: 100%;
+    gap: 8px;
+  }
+  .row__side {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .field__label {
+    flex-basis: 100%;
+  }
+  .field__control {
+    min-width: 0;
+    width: 100%;
+  }
+  .field > .hint {
+    margin-left: 0;
+  }
 }

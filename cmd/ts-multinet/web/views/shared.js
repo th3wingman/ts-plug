@@ -61,6 +61,7 @@ export const state = {
   pageMsg: null, // {kind, text} config-page / add-tailnet feedback
   peerErr: {}, // tailnet -> last select/forget error
   probed: {}, // tailnet -> {peerName: [ports]} — click-to-probe results
+  posturePreviews: Object.create(null), // click-only snapshots; never localStorage or periodic collection
   peerFilter: {}, // tailnet -> filter text
   svcFilter: {}, // tailnet -> services filter text
   hideInactive: {}, // tailnet -> bool (hide offline peers)
@@ -104,6 +105,7 @@ const renderSig = () =>
     state.config,
     state.msgs,
     state.probed,
+    state.posturePreviews,
     state.peerFilter,
     state.svcFilter,
     state.hideInactive,
@@ -395,6 +397,21 @@ export async function restartTailnet(name) {
   refresh();
 }
 
+export async function resetIdentity(name) {
+  if (!window.confirm(
+    `Reset identity for "${name}"? This disconnects the tailnet, deletes its local node identity and clears its saved enrollment key. Selections and peer pins are kept. It stays disabled until you enable it and log in again. The old device is not removed from the Tailscale admin console.`,
+  )) return;
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/reset-identity`, {
+      confirm: name,
+    });
+    msg(name, { kind: "info", text: res.ok });
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  await refresh();
+}
+
 // setNativeDNS toggles whether the tailnet's native MagicDNS name is also
 // listed in the /etc/hosts block (what shell hostname completion reads).
 // DNS resolution is unaffected — both spellings resolve either way.
@@ -462,7 +479,62 @@ export async function setEnabled(name, on) {
   } catch (e) {
     errMsg(name, e.message);
   }
-  refresh();
+  await refresh();
+}
+
+export async function setReportPosture(name, on) {
+  if (on && !window.confirm(
+    `Report device posture to "${name}"? This shares this host's hardware serial numbers and, when requested, MAC addresses with that tailnet for Fleet/CrowdStrike matching. Only this node restarts; its login is kept.`,
+  )) return false;
+  let saved = false;
+  try {
+    const res = await post(`/tailnet/${encodeURIComponent(name)}/report-posture`, { on });
+    delete state.posturePreviews[name];
+    msg(name, { kind: "info", text: res.ok });
+    saved = true;
+  } catch (e) {
+    errMsg(name, e.message);
+  }
+  await refresh();
+  return saved;
+}
+
+export async function previewPosture(name) {
+  const entry = { loading: true };
+  state.posturePreviews[name] = entry;
+  rerender();
+  try {
+    entry.data = await get(`/tailnet/${encodeURIComponent(name)}/posture-preview`);
+  } catch (e) {
+    entry.error = e.message;
+  } finally {
+    entry.loading = false;
+    if (state.posturePreviews[name] === entry) rerender();
+  }
+}
+
+// Same explicit action on Overview and Settings; enabled defaults to true.
+export function enabledButton(name) {
+  const enabled = confFor(name).enabled !== false;
+  const locked = enabled && (confFor(name).locked || []).length > 0;
+  return h("button", {
+    class: "btn" + (enabled ? "" : " btn--primary"),
+    type: "button",
+    disabled: locked,
+    "aria-label": `${enabled ? "Disable" : "Enable"} ${name}`,
+    title: locked
+      ? "Unlock selections before disabling this tailnet"
+      : enabled ? "Stop this tailnet; keep its identity and login" : "Start this tailnet",
+    onclick: async (e) => {
+      const button = e.currentTarget;
+      button.disabled = true;
+      try {
+        await setEnabled(name, !enabled);
+      } finally {
+        button.disabled = false;
+      }
+    },
+  }, enabled ? "Disable" : "Enable");
 }
 
 // Table column visibility is a browser view preference — localStorage, not
@@ -539,12 +611,16 @@ export async function probePeers(name) {
 export async function removeTailnet(name) {
   if (
     !window.confirm(
-      `remove tailnet "${name}"? its node state is kept — re-adding logs back in without a browser`,
+      `Permanently delete tailnet "${name}"? This stops it and purges its local keys, saved login, selections and settings. Re-adding requires fresh authentication. Use Disable instead to keep them. The old device must be removed separately in the Tailscale admin console.`,
     )
   )
     return;
   try {
     const res = await del(`/tailnet/${encodeURIComponent(name)}`);
+    for (const cache of [state.msgs, state.peerErr, state.probed, state.peerFilter,
+      state.svcFilter, state.hideInactive, state.showAll, state.posturePreviews]) {
+      delete cache[name];
+    }
     state.pageMsg = { kind: "ok", text: res.ok };
     location.hash = "#/"; // the detail view's tailnet is gone
   } catch (e) {

@@ -1,4 +1,5 @@
 .data/
 build/
 .state/
+tailscaled.state*
 .envrc.pi/
