@@ -454,8 +454,7 @@ func runAddClient(c cliOpts, name, cidr, tun string) {
 	fmt.Printf("next: sudo ts-multinet login %s\n", res.Name)
 }
 
-// runRemoveClient stops a tailnet and drops it from the config. Node state
-// is kept, so the printed re-add hint needs no new browser login.
+// runRemoveClient permanently deletes the tailnet's config and local state.
 func runRemoveClient(c cliOpts, name string) {
 	var res mutateResult
 	if err := controlDo(c.sock, http.MethodDelete, "/tailnet/"+url.PathEscape(name), nil, &res); err != nil {
@@ -471,7 +470,7 @@ func runRemoveClient(c cliOpts, name string) {
 		return
 	}
 	fmt.Println(res.OK)
-	fmt.Printf("re-add anytime: sudo ts-multinet add %s — logs back in without a browser\n", name)
+	fmt.Printf("re-add: sudo ts-multinet add %s — fresh authentication required\n", name)
 }
 
 func runLoginClient(c cliOpts, tailnet, authkey string) {

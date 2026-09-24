@@ -1,10 +1,5 @@
 // tailnet.js — per-tailnet detail: header with the login affordance, then
-// two sub-tabs: Peers (filter, cap, click-to-probe, selection) and Settings
-// (every editable field, plus the danger zone).
-//
-// Fields with no API behind them (cidr, tun, enabled) render read-only with
-// a pointer to the config file — the daemon has no endpoint for them, and
-// inventing one here would be a lie.
+// Peers, Services, and Settings (including maintenance and identity reset).
 
 import {
   h,
@@ -39,7 +34,10 @@ import {
   setNativeDNS,
   setDomainHosts,
   setAuthKey,
-  setEnabled,
+  setReportPosture,
+  previewPosture,
+  enabledButton,
+  resetIdentity,
   peerCols,
   setPeerCol,
   svcCols,
@@ -819,6 +817,45 @@ function renderServices(root, name, s, tc) {
 
 // --- settings -----------------------------------------------------------------
 
+function posturePreview(name) {
+  const entry = state.posturePreviews[name];
+  const panel = h("section", { class: "panel", id: "posture-preview" },
+    h("h2", {}, "Local posture preview — not confirmation of delivery"),
+    h("p", { class: "hint" }, "Collected only on request, even with reporting off. Previewing does not enable reporting or upload these identifiers. Fleet matching and last delivery must be checked in the Tailscale admin console."),
+    h("button", {
+      class: "btn",
+      type: "button",
+      disabled: entry?.loading,
+      onclick: () => previewPosture(name),
+    }, entry?.loading ? "Collecting…" : entry ? "Refresh posture preview" : "Preview posture data"),
+  );
+  if (!entry) return panel;
+  const result = h("div", { role: "status", "aria-live": "polite" });
+  if (entry.error) result.append(msgEl({ kind: "error", text: entry.error }));
+  if (entry.data) {
+    const p = entry.data;
+    result.append(
+      h("p", { class: "hint" }, `Snapshot collected ${p.collected_at}. Refresh to check for changes.`),
+      infoRow("Configured", p.configured ? "On" : "Off"),
+      infoRow("Node state", p.node_state || "starting"),
+      infoRow("Node preference", p.applied === null ? "Unavailable — not confirmed" : p.applied ? "On" : "Off"),
+    );
+    if (p.prefs_error) result.append(msgEl({ kind: "error", text: p.prefs_error }));
+    if (p.applied !== null && p.applied !== p.configured) {
+      result.append(msgEl({ kind: "error", text: "Configured and node preferences differ — the requested setting is not applied." }));
+    }
+    result.append(
+      infoRow("Serial numbers", p.serial_numbers?.length ? p.serial_numbers.join(", ") : "None available"),
+      infoRow("MAC addresses", p.mac_addresses?.length ? p.mac_addresses.join(", ") : "None available"),
+      h("p", { class: "hint" }, "MAC addresses are candidates: upstream includes them only when requested by the control plane. Serial numbers come from the upstream SMBIOS collector. No keys, tokens or full node preferences are included."),
+    );
+    if (p.serial_error) result.append(msgEl({ kind: "error", text: `Serial collection: ${p.serial_error}` }));
+    if (p.mac_error) result.append(msgEl({ kind: "error", text: `MAC collection: ${p.mac_error}` }));
+  }
+  panel.append(result);
+  return panel;
+}
+
 function renderSettings(root, name, s, tc) {
   const locked = new Set(tc.locked || []);
   const resources = [...new Set([...(tc.resources || []), ...(tc.locked || [])])];
@@ -908,6 +945,37 @@ function renderSettings(root, name, s, tc) {
       ),
     ),
     infoRow("node ip", s?.assigned_ip),
+    h(
+      "div",
+      { class: "field" },
+      h("span", { class: "field__label" }, "device posture"),
+      h(
+        "label",
+        { class: "switch" },
+        h("input", {
+          type: "checkbox",
+          checked: tc.report_posture === true,
+          "aria-describedby": "posture-note",
+          onchange: async (e) => {
+            const input = e.currentTarget;
+            const on = input.checked;
+            input.disabled = true;
+            try {
+              if (!await setReportPosture(name, on)) input.checked = !on;
+            } finally {
+              input.disabled = false;
+            }
+          },
+        }),
+        "Report device posture",
+      ),
+      h(
+        "p",
+        { class: "hint", id: "posture-note" },
+        "Off by default. Shares this host's hardware identifiers with this tailnet for Fleet/CrowdStrike matching. Changes restart only this node; login is kept. Requires Device Identity Collection and the integration in the tailnet admin console. Turning off stops reporting, but does not erase previously collected attributes.",
+      ),
+    ),
+    posturePreview(name),
   );
 
   root.append(
@@ -1067,16 +1135,14 @@ function renderSettings(root, name, s, tc) {
     h(
       "div",
       { class: "field" },
-      h("span", { class: "field__label" }, "enabled"),
+      h("span", { class: "field__label" }, "tailnet"),
       h(
-        "label",
-        { class: "switch" },
-        h("input", {
-          type: "checkbox",
-          ...(tc.enabled === false ? {} : { checked: true }),
-          onchange: (e) => setEnabled(name, e.target.checked),
-        }),
-        " off: node stopped, state and login kept",
+        "div",
+        { class: "field__control" },
+        enabledButton(name),
+        h("span", { class: "hint" }, tc.enabled === false
+          ? "Disabled — node stopped; identity and login are kept unless reset."
+          : "Enabled — disabling stops the node but keeps its identity and login."),
       ),
     ),
     h(
@@ -1109,6 +1175,28 @@ function renderSettings(root, name, s, tc) {
     h(
       "div",
       { class: "field" },
+      h("div", { class: "field__control" },
+        h("button", {
+          class: "btn btn--danger",
+          type: "button",
+          disabled: locked.size > 0,
+          title: locked.size > 0 ? "Unlock selections before resetting identity" : "Fresh enrollment required",
+          onclick: async (e) => {
+            const button = e.currentTarget;
+            button.disabled = true;
+            try {
+              await resetIdentity(name);
+            } finally {
+              button.disabled = false;
+            }
+          },
+        }, "Reset identity"),
+        h("span", { class: "hint" }, "Deletes the local identity and saved enrollment key; keeps selections and peer pins. Leaves this tailnet disabled for a fresh login. The old device remains in the Tailscale admin console."),
+      ),
+    ),
+    h(
+      "div",
+      { class: "field" },
       h(
         "div",
         { class: "field__control" },
@@ -1119,12 +1207,12 @@ function renderSettings(root, name, s, tc) {
             type: "button",
             onclick: () => removeTailnet(name),
           },
-          "remove tailnet",
+          "Delete tailnet",
         ),
         h(
           "span",
           { class: "hint" },
-          "node state (login identity, selection pins) is kept — re-adding logs back in without a browser",
+          "Permanently purges local keys, saved login, selections and settings. Re-adding requires fresh authentication. Use Disable to keep them.",
         ),
       ),
     ),

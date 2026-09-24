@@ -92,10 +92,18 @@ func (f *forwarder) run(ctx context.Context) error {
 	go func() { errc <- f.stackToTun(ctx) }()
 
 	var err error
+	remaining := 2
 	select {
 	case <-ctx.Done():
 	case err = <-errc:
-		cancel() // stop the sibling pump
+		remaining--
+	}
+	cancel()
+	// openTUN uses O_NONBLOCK so Go's poller can interrupt a blocked read
+	// on Close. Join both pumps before reporting teardown complete.
+	f.tun.Close()
+	for range remaining {
+		<-errc
 	}
 	f.ep.Close()
 	f.stack.Close()

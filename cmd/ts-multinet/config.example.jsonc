@@ -17,8 +17,7 @@
 // Auth keys are optional (tagged/automation nodes): "auth_key": "tskey-auth-…"
 // on a tailnet enrolls it without a browser — the key lives in this file and
 // is never shown again (config output redacts it). Ambient TS_AUTHKEY env
-// vars stay rejected. Removing a tailnet keeps its state — re-adding logs back
-// in without a browser.
+// vars stay rejected. Delete purges local keys and settings; Disable keeps them.
 {
   // matches StateDirectory= in the systemd unit; the bare default is ".state"
   // in the working directory — keep this line when running as a service
@@ -48,6 +47,8 @@
     //   //                              // my-server.skynet and my-server.example.ts.net both resolve
     //   // "hostname": "xps13",         // node name in this tailnet (default: ts-multinet-<slug>);
     //   // "enabled": false,            // default true; false skips this tailnet
+    //   // "report_posture": true,      // default false; opt in to hardware identity reporting
+    //   //                              // for Fleet/CrowdStrike matching in this tailnet only
     //   // "allow_all": true,           // select every peer instead of listing resources
     //   //                              // (shared Mullvad exit nodes are never selectable)
     //   // "resources": ["host1", "host2"],  // short names exactly as `peers` shows them;

@@ -64,8 +64,13 @@ func patchConfigFile(path string, prev, next *Config) error {
 			o.StateDir != n.StateDir:
 			// Anything structural rewrites the whole element; only the mutable
 			// keys below are worth preserving comments on.
-			removeTailnetElement(arr, n.Name)
-			insertTailnetElement(arr, *n)
+			obj, err := tailnetObject(arr, n.Name)
+			if err != nil {
+				return err
+			}
+			replacement := &hujson.Array{}
+			insertTailnetElement(replacement, *n)
+			*obj = *replacement.Elements[0].Value.(*hujson.Object)
 		default:
 			obj, err := tailnetObject(arr, n.Name)
 			if err != nil {
@@ -104,6 +109,13 @@ func patchConfigFile(path string, prev, next *Config) error {
 					removeMember(obj, "domain_hosts")
 				} else {
 					setMember(obj, "domain_hosts", hujson.Bool(true))
+				}
+			}
+			if o.ReportPosture != n.ReportPosture {
+				if !n.ReportPosture {
+					removeMember(obj, "report_posture")
+				} else {
+					setMember(obj, "report_posture", hujson.Bool(true))
 				}
 			}
 			if o.AuthKey != n.AuthKey {
@@ -238,7 +250,7 @@ func configsEqual(a, b *Config) bool {
 		if x.Name != y.Name || x.Suffix != y.Suffix || x.Domain != y.Domain ||
 			x.Hostname != y.Hostname ||
 			x.CIDR != y.CIDR || x.TUN != y.TUN || x.AllowAll != y.AllowAll ||
-			x.NativeDNS != y.NativeDNS || x.DomainHosts != y.DomainHosts ||
+			x.NativeDNS != y.NativeDNS || x.DomainHosts != y.DomainHosts || x.ReportPosture != y.ReportPosture ||
 			x.StateDir != y.StateDir || !slices.Equal(x.Resources, y.Resources) ||
 			!slices.Equal(x.Locked, y.Locked) || !slices.Equal(x.AutoSelect, y.AutoSelect) {
 			return false
@@ -346,6 +358,9 @@ func insertTailnetElement(arr *hujson.Array, tc TailnetConf) {
 	}
 	if tc.Enabled != nil {
 		addMember("enabled", hujson.Bool(*tc.Enabled))
+	}
+	if tc.ReportPosture {
+		addMember("report_posture", hujson.Bool(true))
 	}
 	if tc.AuthKey != "" {
 		addMember("auth_key", hujson.String(tc.AuthKey))

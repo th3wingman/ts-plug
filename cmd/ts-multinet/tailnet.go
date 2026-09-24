@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	_ "tailscale.com/feature/posture" // upstream device identity collection; gated by per-node prefs
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
@@ -53,6 +54,13 @@ type Tailnet struct {
 // enroll this node into the wrong tailnet (Cauldron's cross-enrollment guard).
 var ambientAuthEnvs = []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TS_CLIENT_SECRET", "TS_CLIENT_ID", "TS_ID_TOKEN", "TS_AUDIENCE"}
 
+func (tc TailnetConf) nodeStateDir(baseDir string) string {
+	if tc.StateDir != "" {
+		return tc.StateDir
+	}
+	return filepath.Join(baseDir, tc.Name)
+}
+
 func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint32, baseDir string, onRunning func(), rs *resolvedSync) (*Tailnet, error) {
 	for _, key := range ambientAuthEnvs {
 		if os.Getenv(key) != "" {
@@ -60,10 +68,7 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 		}
 	}
 
-	dir := conf.StateDir
-	if dir == "" {
-		dir = filepath.Join(baseDir, conf.Name)
-	}
+	dir := conf.nodeStateDir(baseDir)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
 	}
@@ -83,6 +88,11 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 	if err != nil {
 		ts.Close()
 		return nil, fmt.Errorf("local client: %w", err)
+	}
+
+	if err := setReportPosture(ctx, lc, conf.ReportPosture); err != nil {
+		ts.Close()
+		return nil, err
 	}
 
 	tun, dev, err := openTUN(conf.TUN)
@@ -146,6 +156,21 @@ func startTailnet(ctx context.Context, conf TailnetConf, reg *registry, mtu uint
 		slog.Warn(w, "name", conf.Name)
 	}
 	return tn, nil
+}
+
+// Apply both true and false on every start: the config owns consent, not a
+// previously saved preference. Only this tsnet server's local client is used.
+func setReportPosture(ctx context.Context, lc *local.Client, on bool) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		Prefs:              ipn.Prefs{PostureChecking: on},
+		PostureCheckingSet: true,
+	})
+	if err != nil {
+		return fmt.Errorf("set report device posture: %w", err)
+	}
+	return nil
 }
 
 // watch polls the tailnet's backend state: it records login state for the

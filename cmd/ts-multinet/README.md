@@ -109,14 +109,50 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   `allow-all`/`domain` (CLI and web UI) patch it in place — comments and
   formatting survive — and apply live. Manual edits still work: edit, then
   `sudo ts-multinet reload`. Only globals (mtu, dns_listen, upstream_dns,
-  state_dir, hosts_file, ui_listen) need a service restart. Removing a
-  tailnet keeps its node state; re-adding logs back in without a browser.
+  state_dir, hosts_file, ui_listen) need a service restart. **Delete tailnet**
+  (UI) / `sudo ts-multinet remove <name>` permanently purges the tailnet's
+  local state directory (keys, saved login, peer pins, cached settings) and
+  removes its config entry. Re-adding requires fresh authentication. Use
+  **Disable** to keep state. The old device in the Tailscale admin console
+  must be removed separately. A purge failure leaves a disabled config entry
+  for retry rather than silently retaining credentials. Manual config-file
+  removal only stops the node; use Delete while the entry exists to purge it.
 
 - **Off/on without unprovisioning.** `sudo ts-multinet disable <tailnet>`
   stops the node — state and login kept — and it shows as `disabled` in
   `status` (distinct from `parked`, a failed start); `enable` starts it again
   straight back to Running. Same as the `"enabled": false` config flag and
-  the Settings toggle; nothing about resources or node state is touched.
+  the **Enable / Disable** buttons on Overview and Settings; nothing about
+  resources or node state is touched.
+
+- **Report device posture (opt-in).** Settings → Identity → **Report device
+  posture** controls `"report_posture": true` for that tailnet only (default
+  false). It enables upstream Tailscale device identity collection: hardware
+  serial numbers and, when requested, MAC addresses are reported to that
+  tailnet for Fleet/CrowdStrike matching. This uses the embedded tsnet node,
+  not the system `tailscaled`; no posture flags are copied or forged. Changes
+  restart only this node, preserving login; disabled nodes stay disabled.
+  The tailnet admin must enable **Device Identity Collection** and configure
+  its posture integration. Check that node's device identity and integration
+  sync status in the admin console; matching and policy results are supplied
+  there, not guaranteed by enabling this checkbox. Turning it off stops
+  reporting but does not erase identifiers or attributes already collected.
+  Containers may not expose the host hardware identifiers needed for matching.
+  **Preview posture data**, beside this setting, collects a local snapshot on
+  demand even when reporting or the node is off. It shows upstream-collected
+  serial numbers, candidate MAC addresses, collection errors, configured
+  consent, and the running node's actual posture preference (or unavailable).
+  This is not a last-sent report or delivery confirmation. It never changes
+  consent, uploads identifiers, or contacts system `tailscaled`; snapshots are
+  not persisted and hardware is not collected by the UI's periodic poll.
+
+- **Fresh enrollment.** Settings → Danger zone → **Reset identity** asks for
+  confirmation, stops that tailnet, deletes its local `tailscaled.state`, and
+  clears its saved enrollment key. It stays disabled: enable it, then log in
+  again (or supply a new auth key). Config, selections, and peer identity pins
+  are kept. Locked selections must be unlocked first. This does not remove
+  the old device from the Tailscale admin console or rotate the host OS's SSH
+  keys. Unlike Delete, Reset keeps selections and settings.
 
 - **Auth keys for tagged devices (optional).** Default is still one-time
   browser login: `ts-multinet login <tailnet>` (prints a URL); state persists
@@ -201,15 +237,20 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
 
 ## Web UI
 
+The build pins an unstable Tailscale source snapshot in `go.mod`, currently
+`v1.103.0-pre.0.20260924010211-b1664580dc50` (upstream `main`, September 24,
+2026). It requires Go 1.27.1 or newer. This is compiled into ts-multinet;
+updating the system `tailscaled` does not update the embedded library.
+
 The daemon serves a small control panel at **<http://127.0.0.1:8123>** (knob:
 `ui_listen`) — same API the CLI talks to, rendered for a browser. Drill-down
 layout, hash routes:
 
-- **Overview** (`#/`) — read-only landing: a summary line (tailnets, running,
+- **Overview** (`#/`) — a summary line (tailnets, running,
   peers up/total, advertised services, selected) then one row per tailnet
   (state, suffix, domain, hostname, node IP, peers up/total, services,
   selected, DNS-registered dot). Click a row to drill into that tailnet;
-  nothing is editable here.
+  **Enable / Disable** starts or stops it directly, preserving login state.
 - **Tailnet detail** (`#/tailnet/<name>`) — a breadcrumb back to the overview,
   then **Peers**: name/FQDN filter, a 200-row render cap with a "show all"
   toggle, a **hide inactive** toggle (hides offline peers), per-row selection
@@ -227,12 +268,18 @@ layout, hash routes:
   ports, and service names), plus structural **cidr/tun** — applying those
   restarts just that tailnet (node state and login survive). **restart tailnet**
   stops and starts the node in place — the manual recovery if an outage left
-  it dark; no re-login. Danger zone removes the tailnet, keeping node state.
+  it dark; no re-login. Danger zone offers **Reset identity** for fresh
+  enrollment while keeping selections/settings, and **Delete tailnet** to
+  permanently purge all local state and remove the configuration.
 - **Config** (`#/config`) — globals (`mtu`, `dns_listen`, `upstream_dns`,
   `ui_listen`, `hosts_file`) with a needs-restart note on the ones that need
   one, the add-tailnet form (cidr/tun/domain/hostname optional), and a
   collapsible view of the effective config. `state_dir` is deliberately not
   editable here — moving it orphans node state; edit the file if you mean it.
+
+Pages use the full browser width. Long peer/service lists use normal page
+scrolling; only tables wider than the window scroll horizontally. Row actions
+stay together, and settings wrap on narrow screens.
 
 The topbar carries a config indicator: green **config applied** when the
 running config matches the file, amber **config changed — Reload** when the
