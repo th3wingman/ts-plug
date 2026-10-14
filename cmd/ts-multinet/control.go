@@ -126,6 +126,11 @@ type Daemon struct {
 	// API (mutation notes, forget refusal). A field so tests can stub it.
 	peerTagsByShort func(ctx context.Context, tn *Tailnet) (map[string][]string, error)
 
+	// serviceTags maps each advertised service to its host peers' ACL tags
+	// (see serviceHostTags) — what tag: rules match services by. A field so
+	// tests can stub it; nil means no service carries tags.
+	serviceTags func(ctx context.Context, tn *Tailnet, svcs map[tailcfg.ServiceName]tailcfg.ServiceDetails) (map[tailcfg.ServiceName][]string, error)
+
 	// applied snapshots the config file after the last successful apply, so a
 	// later manual edit is detectable as drift (the UI then says "reload").
 	// Guarded by appliedMu, deliberately independent of cfgMu/d.mu.
@@ -139,7 +144,7 @@ type Daemon struct {
 }
 
 func newDaemon(nets []*Tailnet, reg *registry, cfgPath, hostsFile string) *Daemon {
-	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, services: liveServices, peerTagsByShort: livePeerTagsByShort, tunRetries: map[string]bool{}, health: map[string]*tailnetHealth{}}
+	return &Daemon{tailnets: nets, reg: reg, cfgPath: cfgPath, hostsFile: hostsFile, peerShorts: livePeerShorts, services: liveServices, peerTagsByShort: livePeerTagsByShort, serviceTags: liveServiceTags, tunRetries: map[string]bool{}, health: map[string]*tailnetHealth{}}
 }
 
 // livePeerTagsByShort is the production peerTagsByShort: live status,
@@ -164,6 +169,34 @@ func livePeerTagsByShort(ctx context.Context, tn *Tailnet) (map[string][]string,
 		}
 	}
 	return out, nil
+}
+
+// liveServiceTags is the production serviceTags: live status joined to the
+// service VIPs. Nil-lc tailnets yield nothing, same as livePeerTagsByShort.
+func liveServiceTags(ctx context.Context, tn *Tailnet, svcs map[tailcfg.ServiceName]tailcfg.ServiceDetails) (map[tailcfg.ServiceName][]string, error) {
+	if tn == nil || tn.lc == nil || len(svcs) == 0 {
+		return nil, nil
+	}
+	st, err := tn.lc.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return serviceHostTags(st, svcs), nil
+}
+
+// svcTagsFor runs the swappable serviceTags. Best effort: a status hiccup
+// only means tag: rules match no services this time, the same as a parked
+// tailnet — the listing and notes must not fail over it.
+func (d *Daemon) svcTagsFor(ctx context.Context, tn *Tailnet, svcs map[tailcfg.ServiceName]tailcfg.ServiceDetails) map[tailcfg.ServiceName][]string {
+	if d.serviceTags == nil || tn == nil {
+		return nil
+	}
+	tags, err := d.serviceTags(ctx, tn, svcs)
+	if err != nil {
+		slog.Warn("service host tags unavailable — tag: rules skip services", "name", tn.conf.Name, "err", err)
+		return nil
+	}
+	return tags
 }
 
 // serviceList runs the swappable service discovery, tolerating a parked or
@@ -821,7 +854,7 @@ func (d *Daemon) handlePeers(w http.ResponseWriter, r *http.Request) {
 			short := shortName(p.DNSName, tn.suffix)
 			tp.Peers = append(tp.Peers, peerJSON{
 				Name: short, FQDN: strings.TrimSuffix(p.DNSName, "."), IP: ip, OS: p.OS, Online: p.Online, Services: services[ip], Tags: tags,
-				Selected: conf.AllowAll || slices.Contains(conf.Resources, short) || slices.Contains(conf.Locked, short) || autoTagMatched(conf.AutoSelect, p),
+				Selected: conf.AllowAll || slices.Contains(conf.Resources, short) || slices.Contains(conf.Locked, short) || autoPeerRule(conf.AutoSelect, short, tags) != "",
 			})
 		}
 		out = append(out, tp)
@@ -849,6 +882,7 @@ func (d *Daemon) handleServices(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		conf := d.confFor(tn.conf.Name)
+		hostTags := d.svcTagsFor(r.Context(), tn, svcs)
 		for _, name := range serviceNames(svcs) {
 			sd := svcs[tailcfg.ServiceName(name)]
 			vips := make([]string, 0, len(sd.Addrs))
@@ -864,7 +898,7 @@ func (d *Daemon) handleServices(w http.ResponseWriter, r *http.Request) {
 				DisplayName: orDefault(sd.DisplayName, name),
 				VIPs:        vips,
 				Ports:       ports,
-				Selected:    slices.Contains(conf.Resources, name) || slices.Contains(conf.Locked, name) || autoSvcMatched(conf.AutoSelect, name, sd),
+				Selected:    slices.Contains(conf.Resources, name) || slices.Contains(conf.Locked, name) || autoSvcRule(conf.AutoSelect, name, sd, hostTags[tailcfg.ServiceName(name)]) != "",
 			})
 		}
 		out = append(out, ts)
@@ -1734,9 +1768,10 @@ func (d *Daemon) handleAllowAll(w http.ResponseWriter, r *http.Request) {
 	}, nil)
 }
 
-// handleAuto manages a tailnet's auto_select rules: tag:<acl-tag> selects
-// peers carrying that ACL tag, svc:<glob> selects advertised services whose
-// label matches. Rules are never validated against what exists right now —
+// handleAuto manages a tailnet's auto_select rules: tag:<glob> selects
+// peers carrying a matching ACL tag and the services they host, host:<glob>
+// peers by short name, svc:<glob>
+// advertised services whose label matches. Rules are never validated against what exists right now —
 // the point is that a tag or service can appear later — only for
 // well-formedness; the reply says what they currently match so a typo'd
 // glob surfaces at write time, not as a silent no-op.
@@ -1746,7 +1781,7 @@ func (d *Daemon) handleAuto(w http.ResponseWriter, r *http.Request) {
 		remove := req.On != nil && !*req.On
 		if len(req.Resources) == 0 {
 			if !remove {
-				return clientError{"body must be {\"resources\": [\"tag:x\"|\"svc:glob\", …]} to add, {\"on\": false, \"resources\": […]} to remove, or {\"on\": false} to clear"}
+				return clientError{"body must be {\"resources\": [\"tag:x\"|\"host:glob\"|\"svc:glob\", …]} to add, {\"on\": false, \"resources\": […]} to remove, or {\"on\": false} to clear"}
 			}
 			tc.AutoSelect = nil // off with no rules: clear them all
 			return nil
@@ -1787,23 +1822,23 @@ func (d *Daemon) autoRulesNote(ctx context.Context, name string) string {
 	var matches []string
 	if tagsByShort, err := d.peerTagsByShort(ctx, tn); err == nil {
 		for short, tags := range tagsByShort {
-			for _, rule := range conf.AutoSelect {
-				if strings.HasPrefix(rule, "tag:") && slices.Contains(tags, rule) {
-					matches = append(matches, short)
-				}
+			if autoPeerRule(conf.AutoSelect, short, tags) != "" {
+				matches = append(matches, short)
 			}
 		}
 	}
 	if svcs, err := d.serviceList(ctx, tn); err == nil {
+		hostTags := d.svcTagsFor(ctx, tn, svcs)
 		for _, name := range serviceNames(svcs) {
-			if autoSvcMatched(conf.AutoSelect, name, svcs[tailcfg.ServiceName(name)]) {
+			sn := tailcfg.ServiceName(name)
+			if autoSvcRule(conf.AutoSelect, name, svcs[sn], hostTags[sn]) != "" {
 				matches = append(matches, name)
 			}
 		}
 	}
 	sort.Strings(matches)
 	if len(matches) == 0 {
-		return "rules: " + rules + " — match nothing yet (a later tag or service lands automatically)"
+		return "rules: " + rules + " — match nothing yet (a later host, tag or service lands automatically)"
 	}
 	return "rules: " + rules + " — currently select: " + strings.Join(matches, ", ")
 }
@@ -1811,8 +1846,8 @@ func (d *Daemon) autoRulesNote(ctx context.Context, name string) string {
 // autoRuleFor returns the auto_select rule that would keep selecting name
 // (a peer short name or svc: service) right now — forgetting something a
 // rule re-adds on the next apply would only look broken, so forget refuses
-// and names the rule. Services match by glob or advertised ports; peers
-// need their live tags.
+// and names the rule. Services match by glob or advertised ports; peers by
+// host: glob or their live tags.
 func (d *Daemon) autoRuleFor(ctx context.Context, tn *Tailnet, conf TailnetConf, name string) (string, error) {
 	if isServiceResource(name) {
 		var svcs map[tailcfg.ServiceName]tailcfg.ServiceDetails
@@ -1821,33 +1856,17 @@ func (d *Daemon) autoRuleFor(ctx context.Context, tn *Tailnet, conf TailnetConf,
 				svcs = s
 			}
 		}
-		for _, rule := range conf.AutoSelect {
-			switch {
-			case strings.HasPrefix(rule, "svc:"):
-				if svcRuleMatches(rule, name) {
-					return rule, nil
-				}
-			case strings.HasPrefix(rule, "tcp:"), strings.HasPrefix(rule, "udp:"):
-				if sd, ok := svcs[tailcfg.ServiceName(name)]; ok && portRuleMatches(rule, sd.Ports) {
-					return rule, nil
-				}
-			}
-		}
-		return "", nil
+		sn := tailcfg.ServiceName(name)
+		return autoSvcRule(conf.AutoSelect, name, svcs[sn], d.svcTagsFor(ctx, tn, svcs)[sn]), nil
 	}
 	if tn == nil {
-		return "", nil // not running: no live tags, nothing to refuse
+		return autoPeerRule(conf.AutoSelect, name, nil), nil // not running: no live tags, host: globs still apply
 	}
 	tagsByShort, err := d.peerTagsByShort(ctx, tn)
 	if err != nil {
 		return "", err
 	}
-	for _, rule := range conf.AutoSelect {
-		if strings.HasPrefix(rule, "tag:") && slices.Contains(tagsByShort[name], rule) {
-			return rule, nil
-		}
-	}
-	return "", nil
+	return autoPeerRule(conf.AutoSelect, name, tagsByShort[name]), nil
 }
 
 // handleAuthKey stores an auth key for the tailnet — tagged-device /

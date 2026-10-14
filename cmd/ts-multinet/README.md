@@ -187,9 +187,12 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   peers, services are not identity-pinned (the `svc:` name is the identity)
   and are never port-probed — the advertised ports are shown as metadata.
 - **Auto-select rules** — `auto_select` selects without listing:
-  `tag:<acl-tag>` grabs every peer carrying that Tailscale ACL tag,
-  `svc:<glob>` every advertised service whose label matches (Tailscale
-  exposes no tags on services, so the label glob *is* the service "tag"),
+  `tag:<glob>` grabs every peer carrying a matching Tailscale ACL tag
+  (`tag:pam*`) *and* every service those tagged peers host (Tailscale
+  exposes no tags on services, so a service takes its hosts' tags — a host
+  is a peer listing the service VIP in its AllowedIPs),
+  `host:<glob>` every peer whose short name matches (`host:web-*`),
+  `svc:<glob>` every advertised service whose label matches,
   and `tcp:<port>` / `udp:<port>` every service advertising that port —
   "all MySQL" is just `tcp:3306`, "all SSH" `tcp:22` (the rule must be
   fully covered by an advertised port range, so a wide rule can't grab a
@@ -263,7 +266,7 @@ layout, hash routes:
   ("all MySQL" is one click on `tcp:3306`), a name/display filter, selection
   checkboxes, and **clear all** (ACL-gated; never probed). **Settings**
   (`#/tailnet/<name>/settings`): domain, hostname, allow-all, resource chips,
-  auto-select rule chips (`tag:x` / `svc:glob` / `tcp:port`, added and removed
+  auto-select rule chips (`tag:x` / `host:glob` / `svc:glob` / `tcp:port`, added and removed
   in place, with the add field autocompleting from the tailnet's live tags,
   ports, and service names), plus structural **cidr/tun** — applying those
   restarts just that tailnet (node state and login survive). **restart tailnet**
@@ -457,7 +460,7 @@ the JSON replies already carry these fields). Multi-peer `select`/`forget`
 with `--json` emit one object per line.
 sudo ts-multinet forget skynet rpi4-sk-01       # stop exposing it
 sudo ts-multinet allow-all msinfra on           # every non-Mullvad peer
-sudo ts-multinet auto skynet tag:infra svc:prod-*   # auto-select by rule (tags / service globs)
+sudo ts-multinet auto skynet tag:infra host:web-* svc:prod-*   # auto-select by rule (tags / host & service globs)
 sudo ts-multinet auto skynet off tag:infra      # remove one rule; bare `off` clears all
 sudo ts-multinet domain msinfra                 # print the friendly suffix (set: domain msinfra <name>)
 sudo ts-multinet config                         # effective config, as the daemon sees it

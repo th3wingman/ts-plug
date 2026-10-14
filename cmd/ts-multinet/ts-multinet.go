@@ -51,7 +51,7 @@ type TailnetConf struct {
 	AllowAll      bool     `json:"allow_all,omitempty"`      // select every non-Mullvad peer instead of listing resources
 	Resources     []string `json:"resources,omitempty"`      // short names to select (hosts entries + synthetic IPs)
 	Locked        []string `json:"locked,omitempty"`         // pinned essentials ⊆ resources: survive clear-all, block disable/remove
-	AutoSelect    []string `json:"auto_select,omitempty"`    // rules that select without listing: tag:<acl-tag> peers, svc:<glob> services
+	AutoSelect    []string `json:"auto_select,omitempty"`    // rules that select without listing: tag:<glob> peers + hosted services, host:<glob> peers, svc:<glob> services
 	NativeDNS     bool     `json:"native_dns,omitempty"`     // also list the native MagicDNS name in the hosts block (completion); DNS resolution is unaffected
 	DomainHosts   bool     `json:"domain_hosts,omitempty"`   // always write hosts-block entries as <name>.<domain>; default: bare name, qualified only on cross-tailnet collisions
 	StateDir      string   `json:"state_dir,omitempty"`
@@ -360,7 +360,7 @@ usage:
   ts-multinet [flags] unlock <tailnet> <peer|svc:label>...  release a pin (the selection stays)
   ts-multinet [flags] allow-all <tailnet> [on|off]  select every non-Mullvad peer (default on)
   ts-multinet [flags] auto <tailnet> [rule...]   show/add auto-select rules; off [rule...] removes (none: clears all)
-                                                 rules: tag:<acl-tag> tagged peers, svc:<glob> services, tcp:<port> services advertising it
+                                                 rules: tag:<glob> tagged peers + their services, host:<glob> peers by name, svc:<glob> services, tcp:<port> services advertising it
   ts-multinet [flags] domain <tailnet> [name|-]     set (or print) the friendly DNS suffix; - clears it
   ts-multinet [flags] hostname <tailnet> [name|-]   set (or print) the node name in the tailnet; - clears it
   ts-multinet [flags] config                        print the effective config

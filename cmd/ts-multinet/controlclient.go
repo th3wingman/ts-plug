@@ -718,15 +718,16 @@ func runAllowAllClient(c cliOpts, tailnet, arg string) {
 	}
 }
 
-// runAutoClient manages a tailnet's auto-select rules: tag:<acl-tag>
-// selects peers carrying that ACL tag, svc:<glob> selects advertised
-// services whose label matches. Rules stay rules in the config — matches are
-// recomputed on every apply, live on netmap updates. Bare `auto <tailnet>`
-// prints the rules; `off` with no rules clears them all.
+// runAutoClient manages a tailnet's auto-select rules: tag:<glob>
+// selects peers carrying a matching ACL tag and the services they host,
+// host:<glob> peers by short name, svc:<glob> advertised services whose
+// label matches. Rules stay rules in the config — matches are recomputed
+// on every apply, live on netmap updates. Bare `auto <tailnet>` prints the
+// rules; `off` with no rules clears them all.
 func runAutoClient(c cliOpts, tailnet string, args []string) {
 	if tailnet == "" {
 		fmt.Fprintln(os.Stderr, "usage: ts-multinet auto <tailnet> [rule...] | auto <tailnet> off [rule...]")
-		fmt.Fprintln(os.Stderr, "rules: tag:<acl-tag> — peers carrying the tag; svc:<glob> — services by label; tcp:<port> — services advertising it")
+		fmt.Fprintln(os.Stderr, "rules: tag:<glob> — tagged peers and the services they host; host:<glob> — peers by name; svc:<glob> — services by label; tcp:<port> — services advertising it")
 		os.Exit(1)
 	}
 	off := len(args) > 0 && strings.EqualFold(args[0], "off")
@@ -749,7 +750,7 @@ func runAutoClient(c cliOpts, tailnet string, args []string) {
 			os.Exit(1)
 		}
 		if len(tc.AutoSelect) == 0 {
-			fmt.Printf("auto %s: no rules — add tag:<acl-tag>, svc:<glob>, or tcp:<port>\n", tailnet)
+			fmt.Printf("auto %s: no rules — add tag:<glob>, host:<glob>, svc:<glob>, or tcp:<port>\n", tailnet)
 			return
 		}
 		if c.json {

@@ -1066,14 +1066,14 @@ function renderSettings(root, name, s, tc) {
         : h(
             "span",
             { class: "field__value" },
-            "no rules — tag:<acl-tag>, svc:<glob>, or tcp:<port>",
+            "no rules — tag:<glob>, host:<glob>, svc:<glob>, or tcp:<port>",
           ),
     ),
     fieldRow(
       "add rule",
       textInput("", {
         class: "input",
-        placeholder: "tag:infra, svc:prod-*, or tcp:3306",
+        placeholder: "tag:pam*, host:web-*, svc:prod-*, or tcp:3306",
         list: `tsm-rules-${slug(name)}`,
       }),
       (e) => {
@@ -1087,7 +1087,7 @@ function renderSettings(root, name, s, tc) {
         }
       },
       {
-        note: "auto rules select without listing: tag:x grabs peers carrying that ACL tag, svc:glob grabs services by label, tcp:port grabs every service advertising that port (mysql = tcp:3306) — matches land live as tags and services change, and clear-all removes the rules too",
+        note: "auto rules select without listing: tag:glob grabs peers carrying a matching ACL tag and the services they host, host:glob grabs peers by name, svc:glob grabs services by label, tcp:port grabs every service advertising that port (mysql = tcp:3306) — matches land live as peers, tags and services change, and clear-all removes the rules too",
       },
     ),
     h(

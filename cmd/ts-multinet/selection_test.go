@@ -217,6 +217,71 @@ func TestResolveSelectionsAutoRules(t *testing.T) {
 	}
 }
 
+// host: globs the short name over the same Mullvad-filtered index, unions
+// with tag: matches without duplicates, and pins like any peer.
+func TestResolveSelectionsHostRule(t *testing.T) {
+	conf := TailnetConf{Name: "skynet", AutoSelect: []string{"host:web-*", "tag:infra"}}
+	st := mkStatus(
+		peer("node-1", "web-01."+skynetSuffix+".", "100.64.0.1"),
+		taggedPeer("node-2", "web-02."+skynetSuffix+".", "100.64.0.2", "tag:infra"), // both rules: once
+		peer("node-3", "db-01."+skynetSuffix+".", "100.64.0.3"),
+		peer("node-m", "web-mullvad.mullvad.ts.net.", "100.104.0.9"),
+	)
+	pins := pinStore{}
+	resolved, errs, _ := resolveSelections(skynetSuffix, conf, st, nil, pins)
+	if len(errs) != 0 {
+		t.Fatalf("errs=%v", errs)
+	}
+	var shorts []string
+	for _, r := range resolved {
+		shorts = append(shorts, r.Short)
+	}
+	sort.Strings(shorts)
+	if want := []string{"web-01", "web-02"}; !slices.Equal(shorts, want) {
+		t.Fatalf("resolved %v, want %v", shorts, want)
+	}
+	if pins["web-01"].Target != "node-1" {
+		t.Fatalf("host-matched peer not pinned: %+v", pins)
+	}
+	if got := autoPeerRule(conf.AutoSelect, "db-01", nil); got != "" {
+		t.Fatalf("db-01 matched %q", got)
+	}
+}
+
+// tag: is a glob, and it reaches services through their hosts: a service is
+// tagged by the peers listing its VIP as an exact AllowedIPs entry. An exit
+// node's default route covers every VIP but must not tag anything.
+func TestResolveSelectionsTagGlobPeersAndServices(t *testing.T) {
+	conf := TailnetConf{Name: "corp", AutoSelect: []string{"tag:pam*"}}
+	host := taggedPeer("node-1", "pam-gw."+skynetSuffix+".", "100.64.0.1", "tag:pam-host")
+	hostIPs := views.SliceOf([]netip.Prefix{netip.MustParsePrefix("100.64.0.1/32"), netip.MustParsePrefix("100.100.0.5/32")})
+	host.AllowedIPs = &hostIPs
+	exit := taggedPeer("node-2", "exit."+skynetSuffix+".", "100.64.0.2", "tag:exit")
+	exitIPs := views.SliceOf([]netip.Prefix{netip.MustParsePrefix("100.64.0.2/32"), netip.MustParsePrefix("0.0.0.0/0")})
+	exit.AllowedIPs = &exitIPs
+	st := mkStatus(host, exit, taggedPeer("node-3", "other."+skynetSuffix+".", "100.64.0.3", "tag:web"))
+	svcs := map[tailcfg.ServiceName]tailcfg.ServiceDetails{
+		"svc:ai":    {Name: "svc:ai", Addrs: []netip.Addr{netip.MustParseAddr("100.100.0.5")}}, // hosted by pam-gw
+		"svc:other": {Name: "svc:other", Addrs: []netip.Addr{netip.MustParseAddr("100.100.0.6")}},
+	}
+	resolved, errs, _ := resolveSelections(skynetSuffix, conf, st, svcs, pinStore{})
+	if len(errs) != 0 {
+		t.Fatalf("errs=%v", errs)
+	}
+	var shorts []string
+	for _, r := range resolved {
+		shorts = append(shorts, r.Short)
+	}
+	sort.Strings(shorts)
+	if want := []string{"pam-gw", "svc:ai"}; !slices.Equal(shorts, want) {
+		t.Fatalf("resolved %v, want %v", shorts, want)
+	}
+	tags := serviceHostTags(st, svcs)
+	if !slices.Equal(tags["svc:ai"], []string{"tag:pam-host"}) || len(tags["svc:other"]) != 0 {
+		t.Fatalf("service host tags = %v (exit node's 0.0.0.0/0 must not count)", tags)
+	}
+}
+
 func TestNormalizeAutoRule(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"tag:infra", "tag:infra"},
@@ -228,13 +293,16 @@ func TestNormalizeAutoRule(t *testing.T) {
 		{"UDP:53", "udp:53"},
 		{"tcp:3300-3400", "tcp:3300-3400"},
 		{"tcp:*", "tcp:*"},
+		{"HOST:Web-*", "host:web-*"},
+		{"TAG:Pam*", "tag:pam*"},
+		{"host:nucbox", "host:nucbox"},
 	} {
 		got, err := normalizeAutoRule(c.in)
 		if err != nil || got != c.want {
 			t.Errorf("normalizeAutoRule(%q) = %q, %v; want %q", c.in, got, err, c.want)
 		}
 	}
-	for _, bad := range []string{"", "prod", "svc:", "tag:", "svc:[", "tcp:", "tcp:0", "tcp:abc"} {
+	for _, bad := range []string{"", "prod", "svc:", "tag:", "svc:[", "host:", "host:[", "tag:[", "tcp:", "tcp:0", "tcp:abc"} {
 		if _, err := normalizeAutoRule(bad); err == nil {
 			t.Errorf("normalizeAutoRule(%q) accepted a malformed rule", bad)
 		}
