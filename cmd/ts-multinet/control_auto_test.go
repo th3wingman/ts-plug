@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"slices"
@@ -86,6 +87,23 @@ func TestAutoNoteNamesCurrentMatches(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("reply missing %q: %s", want, body)
 		}
+	}
+}
+
+// a rule matching many names reports a count and a handful, not all of them
+func TestAutoNoteCapsLongMatchList(t *testing.T) {
+	d, _ := stubDaemon(t)
+	d.peerTagsByShort = func(context.Context, *Tailnet) (map[string][]string, error) {
+		m := map[string][]string{}
+		for i := range 20 {
+			m[fmt.Sprintf("pam-%02d", i)] = nil
+		}
+		return m, nil
+	}
+	rec := doReq(t, d, "POST", "/tailnet/dev/auto", `{"resources":["host:pam-*"]}`)
+	body := rec.Body.String()
+	if !strings.Contains(body, "currently select 20: pam-00,") || !strings.Contains(body, "(+12 more)") || strings.Contains(body, "pam-19") {
+		t.Fatalf("note not capped: %s", body)
 	}
 }
 
