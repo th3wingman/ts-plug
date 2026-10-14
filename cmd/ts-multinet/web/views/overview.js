@@ -75,80 +75,118 @@ export function renderOverview(root) {
     return;
   }
 
-  const rows = h("div", { class: "rows" });
+  // one table row per tailnet: the numbers get their own aligned columns so
+  // tailnets compare at a glance; identity facts (suffix, domain, hostname,
+  // node ip) follow. A disabled tailnet has no live numbers — dashes, not
+  // rows of zeros.
+  const cols = [
+    ["tailnet"],
+    ["dns"],
+    ["peers up", "num"],
+    ["peers sel", "num"],
+    ["services", "num"],
+    ["svc sel", "num"],
+    ["exposed", "num"],
+    ["rules"],
+    ["suffix"],
+    ["domain"],
+    ["hostname"],
+    ["node ip"],
+    [""],
+  ];
+  const tbody = h("tbody");
   for (const s of st) {
     const tc = confFor(s.name);
+    const live = s.state === "Running";
     const peers = peersOf(s.name);
     const services = svcsOf(s.name);
     const pSel = nSel(peers);
     const sSel = nSel(services);
     const exp = s.selected ?? 0;
-    const short = s.state === "Running" && exp < pSel + sSel;
+    const short = live && exp < pSel + sSel;
     const rules = (tc.auto_select || []).length;
-    rows.append(
+    const href = `#/tailnet/${encodeURIComponent(s.name)}`;
+    const dash = (v) => (live ? String(v) : "—");
+    const num = (v, extra = {}) => h("td", { class: "num", ...extra }, v);
+    tbody.append(
       h(
-        "div",
-        { class: "row" },
+        "tr",
+        {
+          class: "ov-row" + (live ? "" : " is-down"),
+          onclick: (e) => {
+            if (!e.target.closest("button, a")) location.hash = href;
+          },
+        },
         h(
-          "a",
-          { class: "row__link", href: `#/tailnet/${encodeURIComponent(s.name)}` },
+          "td",
+          {},
           h(
-            "div",
-            { class: "row__main" },
-            h("span", { class: "row__name" }, s.name),
+            "span",
+            { class: "ov-name" },
+            h("a", { class: "row__name", href }, s.name),
             stateBadge(s.state),
           ),
-          h(
-            "div",
-            { class: "row__facts" },
-            fact("suffix", s.suffix || (tc.enabled === false ? "—" : "(detecting)")),
-            fact("domain", domainOf(tc)),
-            fact("hostname", s.hostname || hostnameOf(tc)),
-            fact("node ip", s.assigned_ip || "—"),
-            fact("peers", `${s.up} up / ${s.peers} total · ${pSel} selected`),
-            fact("services", `${services.length} · ${sSel} selected`),
-            fact(
-              "exposed",
-              `${exp} / ${pSel + sSel}`,
-              short
-                ? {
-                    cls: "is-short",
-                    title: `${pSel + sSel - exp} selected but not live — open the tailnet for the errors`,
-                  }
-                : { title: "live in the hosts block / selected" },
-            ),
-            tc.allow_all && fact("allow-all", "on"),
-            rules > 0 && fact("auto", `${rules} rule${rules === 1 ? "" : "s"}`),
-          ),
-          h(
-            "div",
-            { class: "row__side" },
-            h(
-              "span",
-              { class: "row__dns" },
-              dnsDot(s.state === "Running" ? s.dns_registered : undefined),
-              h("span", { class: "hint" }, "dns"),
-            ),
-            h("span", { class: "row__chev", title: `open ${s.name}` }, "→"),
-          ),
         ),
-        enabledButton(s.name),
-        state.msgs[s.name] && h(
-          "div",
-          { class: "row__message", role: "status" },
-          msgEl(state.msgs[s.name]),
+        h("td", {}, dnsDot(live ? s.dns_registered : undefined)),
+        num(live ? `${s.up} / ${s.peers}` : "—"),
+        num(dash(pSel)),
+        num(dash(services.length)),
+        num(dash(sSel)),
+        num(
+          live ? `${exp} / ${pSel + sSel}` : "—",
+          short
+            ? {
+                class: "num is-short",
+                title: `${pSel + sSel - exp} selected but not live — open the tailnet for the errors`,
+              }
+            : { title: "live in the hosts block / selected" },
         ),
+        h(
+          "td",
+          {},
+          [tc.allow_all && "allow-all", rules > 0 && `${rules} auto`]
+            .filter(Boolean)
+            .join(" · ") || "—",
+        ),
+        h("td", {}, s.suffix || (tc.enabled === false ? "—" : "(detecting)")),
+        h("td", {}, domainOf(tc)),
+        h("td", {}, s.hostname || hostnameOf(tc)),
+        h("td", {}, s.assigned_ip || "—"),
+        h("td", { class: "ov-action" }, enabledButton(s.name)),
       ),
     );
+    if (state.msgs[s.name]) {
+      tbody.append(
+        h(
+          "tr",
+          { class: "ov-msg" },
+          h(
+            "td",
+            { colspan: "" + cols.length, role: "status" },
+            msgEl(state.msgs[s.name]),
+          ),
+        ),
+      );
+    }
   }
-  root.append(rows);
-}
-
-function fact(label, value, { cls, title } = {}) {
-  return h(
-    "span",
-    { class: "fact" + (cls ? " " + cls : ""), ...(title ? { title } : {}) },
-    h("span", { class: "fact__label" }, label),
-    h("span", { class: "fact__value" }, value),
+  root.append(
+    h(
+      "div",
+      { class: "table-wrap" },
+      h(
+        "table",
+        { class: "ov-table" },
+        h(
+          "thead",
+          {},
+          h(
+            "tr",
+            {},
+            ...cols.map(([label, cls]) => h("th", cls ? { class: cls } : {}, label)),
+          ),
+        ),
+        tbody,
+      ),
+    ),
   );
 }

@@ -251,10 +251,11 @@ layout, hash routes:
 
 - **Overview** (`#/`) — a summary line (tailnets, running,
   peers up/total and selected, advertised services and selected, exposed)
-  then one row per tailnet (state, suffix, domain, hostname, node IP, peers
-  up/total · selected, services · selected, **exposed** live/selected —
-  amber when some selections didn't make it into the hosts block — allow-all
-  and auto-rule count when set, DNS-registered dot). Click a row to drill into that tailnet;
+  then a table, one row per tailnet: state, DNS-registered dot, peers
+  up/total, peers selected, services, services selected, **exposed**
+  live/selected (amber when some selections didn't make it into the hosts
+  block), allow-all / auto-rule count, suffix, domain, hostname, node IP.
+  Disabled tailnets show dashes instead of zeros. Click a row to drill into that tailnet;
   **Enable / Disable** starts or stops it directly, preserving login state.
 - **Tailnet detail** (`#/tailnet/<name>`) — a breadcrumb back to the overview,
   then **Peers**: selected peers first in their own section (never capped),

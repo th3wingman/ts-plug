@@ -1803,6 +1803,9 @@ func (d *Daemon) handleAuto(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// autoNoteMax caps how many matched names autoRulesNote spells out.
+const autoNoteMax = 8
+
 // autoRulesNote is the auto mutations' "what did that do": the rules plus
 // what they currently select. Best effort — a tailnet that isn't running or
 // a discovery hiccup degrades to naming the rules, never to an error: the
@@ -1839,6 +1842,11 @@ func (d *Daemon) autoRulesNote(ctx context.Context, name string) string {
 	sort.Strings(matches)
 	if len(matches) == 0 {
 		return "rules: " + rules + " — match nothing yet (a later host, tag or service lands automatically)"
+	}
+	// a broad rule can match hundreds — the note is a confirmation, not the
+	// listing (the peers/services tables are), so name a handful and count
+	if n := len(matches); n > autoNoteMax {
+		return fmt.Sprintf("rules: %s — currently select %d: %s, … (+%d more)", rules, n, strings.Join(matches[:autoNoteMax], ", "), n-autoNoteMax)
 	}
 	return "rules: " + rules + " — currently select: " + strings.Join(matches, ", ")
 }
