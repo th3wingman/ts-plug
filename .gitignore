@@ -2,4 +2,24 @@
 build/
 .state/
 tailscaled.state*
-.envrc.pi/
+
+# Agent/session artifacts
+.pi/
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# Go test/coverage output
+*.test
+*.out
+coverage.*
+
+# Editor/OS cruft
+.idea/
+.vscode/
+*.swp
+.DS_Store
