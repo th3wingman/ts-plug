@@ -167,7 +167,8 @@ const fact = (label, value) =>
 
 // statsStrip is the at-a-glance health line above the tabs: what the daemon
 // reports about this tailnet, so "it works" is visible instead of assumed.
-// `selected` pairs the live hosts-block count with the configured one — a gap
+// `exposed` pairs the live hosts-block count with the effective selection
+// (server-side flags: explicit, locked, allow-all, auto rules) — a gap
 // between them is the drift worth seeing.
 function statsStrip(s, tc, name) {
   if (!s) {
@@ -177,42 +178,47 @@ function statsStrip(s, tc, name) {
       h("span", { class: "hint" }, "no live status — the node is not running"),
     );
   }
-  const advertised =
-    state.services.find((x) => x.name === name)?.services?.length || 0;
-  const configured = (tc.resources || []).length;
-  const autoRules = (tc.auto_select || []).length > 0;
+  const peers = state.peers.find((x) => x.name === name)?.peers || [];
+  const services = state.services.find((x) => x.name === name)?.services || [];
+  const pSel = peers.filter((p) => p.selected).length;
+  const sSel = services.filter((x) => x.selected).length;
+  const wanted = pSel + sSel;
   const live = s.selected ?? 0;
   // DNS and the hosts block only exist for a running node: report them
   // neutrally otherwise rather than crying wolf about \"not registered\".
   const running = s.state === "Running";
   const reg = running ? s.dns_registered : undefined;
-  const stale = running && configured > 0 && live < configured;
+  const stale = running && live < wanted;
   return h(
     "div",
     { class: "stats" },
     fact("dns", h("span", {}, dnsDot(reg), dnsLabel(reg))),
-    fact("peers", `${s.up ?? 0}/${s.peers ?? 0} up`),
-    fact("services", String(advertised)),
+    fact("peers", `${s.up ?? 0}/${s.peers ?? 0} up · ${pSel} selected`),
+    fact("services", `${services.length} · ${sSel} selected`),
     h(
       "span",
       { class: "fact" + (stale ? " is-stale" : "") },
-      h("span", { class: "fact__label" }, "selected"),
+      h("span", { class: "fact__label" }, "exposed"),
       h(
         "span",
         {
           class: "fact__value",
-          title: [
-            stale
-              ? `${configured - live} configured resource(s) are not in the hosts block`
-              : "",
-            autoRules ? "auto-select rules may select beyond the explicit list" : "",
-          ]
-            .filter(Boolean)
-            .join(" — "),
+          title: stale
+            ? `${wanted - live} selected resource(s) are not in the hosts block`
+            : "live in the hosts block / selected",
         },
-        `${live}/${configured}${autoRules ? "+" : ""}`,
+        `${live}/${wanted}`,
       ),
     ),
+  );
+}
+
+// sectionRow is a full-width group header inside a table body.
+function sectionRow(span, label) {
+  return h(
+    "tr",
+    { class: "section-row" },
+    h("td", { colspan: "" + span }, label),
   );
 }
 
@@ -387,9 +393,20 @@ function renderPeers(root, name, s, tc) {
     const hit = peers
       .filter(matches)
       .filter((p) => !state.hideInactive[name] || p.online);
-    const shown = state.showAll[name] ? hit : hit.slice(0, PEER_CAP);
+    // selected rows go first in their own section and are never capped —
+    // the cap only trims the unselected rest
+    const hitSel = hit.filter((p) => p.selected);
+    const hitRest = hit.filter((p) => !p.selected);
+    const rest = state.showAll[name] ? hitRest : hitRest.slice(0, PEER_CAP);
+    const shown = [...hitSel, ...rest];
 
     for (const p of shown) {
+      if (hitSel.length && hitRest.length) {
+        if (p === hitSel[0])
+          tbody.append(sectionRow(span, `selected · ${hitSel.length}`));
+        if (p === rest[0])
+          tbody.append(sectionRow(span, `not selected · ${hitRest.length}`));
+      }
       const box = tc.allow_all
         ? h("input", {
             type: "checkbox",
@@ -455,7 +472,7 @@ function renderPeers(root, name, s, tc) {
       tbody.append(
         h("tr", {}, h("td", { colspan: "" + span, class: "empty" }, note)),
       );
-    } else if (!state.showAll[name] && hit.length > shown.length) {
+    } else if (!state.showAll[name] && hitRest.length > rest.length) {
       tbody.append(
         h(
           "tr",
@@ -650,8 +667,16 @@ function renderServices(root, name, s, tc) {
     );
     tbody.replaceChildren();
     const hit = services.filter(matches);
+    const hitSel = hit.filter((x) => x.selected);
+    const hitRest = hit.filter((x) => !x.selected);
 
-    for (const svc of hit) {
+    for (const svc of [...hitSel, ...hitRest]) {
+      if (hitSel.length && hitRest.length) {
+        if (svc === hitSel[0])
+          tbody.append(sectionRow(span, `selected · ${hitSel.length}`));
+        if (svc === hitRest[0])
+          tbody.append(sectionRow(span, `not selected · ${hitRest.length}`));
+      }
       const box = locked.has(svc.name)
         ? h("input", {
             type: "checkbox",
