@@ -115,6 +115,11 @@ func TestForgetRefusesAutoSelected(t *testing.T) {
 	// an untagged peer forgets normally, the rule-matched ones forget once
 	// the rule is gone, and a service matched only by its advertised port
 	// refuses the same way
+	doReq(t, d, "POST", "/tailnet/dev/auto", `{"resources":["host:d?"]}`)
+	if rec := doReq(t, d, "POST", "/tailnet/dev/forget", `{"peer":"db"}`); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "auto-selected by host:d?") {
+		t.Fatalf("host-rule forget = %d %s", rec.Code, rec.Body.String())
+	}
+	doReq(t, d, "POST", "/tailnet/dev/auto", `{"on":false,"resources":["host:d?"]}`)
 	if rec := doReq(t, d, "POST", "/tailnet/dev/forget", `{"peer":"db"}`); rec.Code != http.StatusOK {
 		t.Fatalf("untagged forget = %d %s", rec.Code, rec.Body.String())
 	}
@@ -156,8 +161,12 @@ func TestServicesSelectedByRule(t *testing.T) {
 	stubServices(d, map[tailcfg.ServiceName]tailcfg.ServiceDetails{
 		"svc:prod-db": {Name: "svc:prod-db"},
 		"svc:web":     {Name: "svc:web"},
+		"svc:ai":      {Name: "svc:ai"},
 	})
-	doReq(t, d, "POST", "/tailnet/dev/auto", `{"resources":["svc:prod-*"]}`)
+	d.serviceTags = func(context.Context, *Tailnet, map[tailcfg.ServiceName]tailcfg.ServiceDetails) (map[tailcfg.ServiceName][]string, error) {
+		return map[tailcfg.ServiceName][]string{"svc:ai": {"tag:pam-host"}}, nil
+	}
+	doReq(t, d, "POST", "/tailnet/dev/auto", `{"resources":["svc:prod-*","tag:pam*"]}`)
 
 	rec := doReq(t, d, "GET", "/services", "")
 	if rec.Code != http.StatusOK {
@@ -171,7 +180,7 @@ func TestServicesSelectedByRule(t *testing.T) {
 	for _, s := range tss[0].Services {
 		byName[s.Name] = s.Selected
 	}
-	if !byName["svc:prod-db"] || byName["svc:web"] {
+	if !byName["svc:prod-db"] || !byName["svc:ai"] || byName["svc:web"] {
 		t.Fatalf("Selected must follow the rule: %v", byName)
 	}
 }

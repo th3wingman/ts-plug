@@ -54,7 +54,8 @@
     //   // "resources": ["host1", "host2"],  // short names exactly as `peers` shows them;
     //   //                                   // usually managed via `select`/`forget` or the web UI
     //   // "auto_select": ["tag:infra", "svc:prod-*", "tcp:3306"],  // select without listing:
-    //   //                              // tag:<acl-tag> grabs peers carrying the tag,
+    //   //                              // tag:<glob> grabs tagged peers + services they host,
+    //   //                              // host:<glob> grabs peers by short name,
     //   //                              // svc:<glob> grabs services by label,
     //   //                              // tcp:<port> grabs services advertising that port;
     //   //                              // matches land live as tags/services change

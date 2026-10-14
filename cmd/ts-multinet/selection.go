@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -140,19 +141,18 @@ func resolveSelections(suffix string, conf TailnetConf, st *ipnstate.Status, ser
 	}
 
 	// Auto rules expand at resolve time and never touch the config: tag:
-	// adds every peer carrying the ACL tag (walking the same Mullvad-filtered,
-	// short-name index the explicit selections use), and service rules add
+	// adds every peer carrying a matching ACL tag and host: every peer whose short
+	// name matches the glob (walking the same Mullvad-filtered, short-name
+	// index the explicit selections use), and service rules add
 	// every advertised service they cover. A peer tagged later, a service
 	// advertised later — or a tag removed / a service withdrawn — lands on
 	// the next apply, which the netmap watcher triggers live. Rule-matched
 	// peers ride the same pin machinery as explicit selections, so identity
 	// changes still fail loudly instead of redirecting.
-	for _, rule := range conf.AutoSelect {
-		if strings.HasPrefix(rule, "tag:") {
-			for _, short := range order { // netmap order, same as the index
-				if peerHasTag(byShort[short], rule) && !slices.Contains(want, short) {
-					want = append(want, short)
-				}
+	if len(conf.AutoSelect) > 0 {
+		for _, short := range order { // netmap order, same as the index
+			if !slices.Contains(want, short) && autoPeerRule(conf.AutoSelect, short, peerTags(byShort[short])) != "" {
+				want = append(want, short)
 			}
 		}
 	}
@@ -160,11 +160,13 @@ func resolveSelections(suffix string, conf TailnetConf, st *ipnstate.Status, ser
 	// whose advertised ports cover the rule — the PORTS column is the closest
 	// thing to a service "type" Tailscale exposes (the official CLI infers
 	// ssh/database types from these same ports).
+	hostTags := serviceHostTags(st, services)
 	for _, name := range serviceNames(services) { // sorted
 		if slices.Contains(want, name) {
 			continue
 		}
-		if autoSvcMatched(conf.AutoSelect, name, services[tailcfg.ServiceName(name)]) {
+		sn := tailcfg.ServiceName(name)
+		if autoSvcRule(conf.AutoSelect, name, services[sn], hostTags[sn]) != "" {
 			want = append(want, name)
 		}
 	}
@@ -225,12 +227,14 @@ func shortTarget(target string) string {
 // --- auto-select rules ---
 //
 // Tailscale exposes no tags on services (ServiceDetails carries name, ports,
-// addresses, actions — nothing tag-like), so service "tags" are a naming
-// convention: an svc: rule is a glob over the service label. Peers do carry
-// real ACL tags, so tag: rules match those exactly. Rules never validate
+// addresses, actions — nothing tag-like), so an svc: rule is a glob over the
+// service label, and a tag: rule (a glob too) reaches a service through the
+// ACL tags of the peers hosting it — the tags that approve a service host
+// in the policy. Rules never validate
 // against what exists right now — the whole point is that a service
 // advertised later or a device tagged later lands without touching the
-// config; the control API reports what they currently match instead.
+// config; the control API reports what they currently match instead. host:
+// rules glob the peer's short name the same way svc: globs a service label.
 
 // normalizeAutoRule validates one auto_select rule and returns its
 // canonical (lowercased) form. A malformed rule is a config-load error, not
@@ -246,16 +250,27 @@ func normalizeAutoRule(rule string) (string, error) {
 		if _, err := path.Match(label, "x"); err != nil {
 			return "", fmt.Errorf("auto_select %q: bad glob: %v", rule, err)
 		}
+	case strings.HasPrefix(r, "host:"):
+		name := strings.TrimPrefix(r, "host:")
+		if name == "" {
+			return "", fmt.Errorf("auto_select %q: empty host name", rule)
+		}
+		if _, err := path.Match(name, "x"); err != nil {
+			return "", fmt.Errorf("auto_select %q: bad glob: %v", rule, err)
+		}
 	case strings.HasPrefix(r, "tag:"):
 		if len(r) <= len("tag:") {
 			return "", fmt.Errorf("auto_select %q: empty tag", rule)
+		}
+		if _, err := path.Match(r, "x"); err != nil {
+			return "", fmt.Errorf("auto_select %q: bad glob: %v", rule, err)
 		}
 	case strings.HasPrefix(r, "tcp:"), strings.HasPrefix(r, "udp:"):
 		if _, err := tailcfg.ParseProtoPortRanges([]string{r}); err != nil {
 			return "", fmt.Errorf("auto_select %q: bad proto:port (%v)", rule, err)
 		}
 	default:
-		return "", fmt.Errorf("auto_select %q: must start with svc: (service label glob), tag: (peer ACL tag), or tcp:/udp: (advertised port)", rule)
+		return "", fmt.Errorf("auto_select %q: must start with svc: (service label glob), host: (peer name glob), tag: (ACL tag glob: peers and the services they host), or tcp:/udp: (advertised port)", rule)
 	}
 	return r, nil
 }
@@ -271,10 +286,13 @@ func svcRuleMatches(rule, svcName string) bool {
 	return err == nil && ok
 }
 
-// peerHasTag reports whether a peer carries an ACL tag (nil-safe — the
-// status carries tags as a pointer to a read-only view).
-func peerHasTag(p *ipnstate.PeerStatus, tag string) bool {
-	return p != nil && p.Tags != nil && p.Tags.ContainsFunc(func(t string) bool { return t == tag })
+// peerTags returns a peer's ACL tags (nil-safe — the status carries tags as
+// a pointer to a read-only view).
+func peerTags(p *ipnstate.PeerStatus) []string {
+	if p == nil || p.Tags == nil {
+		return nil
+	}
+	return p.Tags.AsSlice()
 }
 
 // portRuleMatches reports whether a "tcp:<port>" / "udp:<port>" rule (a
@@ -295,33 +313,93 @@ func portRuleMatches(rule string, ports []tailcfg.ProtoPortRange) bool {
 	return false
 }
 
-// autoTagMatched reports whether any tag: auto rule selects this peer —
-// the peers listing's server-side Selected flag (the same effective union
-// resolveSelections applies).
-func autoTagMatched(rules []string, p *ipnstate.PeerStatus) bool {
+// autoPeerRule returns the first tag: or host: auto rule that selects the
+// peer (short name, live ACL tags), or "" — shared by resolveSelections, the
+// peers listing's Selected flag, the auto note and forget's refusal, so all
+// four agree on what a rule matches.
+func autoPeerRule(rules []string, short string, tags []string) string {
 	for _, rule := range rules {
-		if strings.HasPrefix(rule, "tag:") && peerHasTag(p, rule) {
+		switch {
+		case strings.HasPrefix(rule, "tag:"):
+			if tagRuleMatches(rule, tags) {
+				return rule
+			}
+		case strings.HasPrefix(rule, "host:"):
+			if ok, err := path.Match(strings.TrimPrefix(rule, "host:"), short); err == nil && ok {
+				return rule
+			}
+		}
+	}
+	return ""
+}
+
+// autoSvcRule returns the first auto rule that selects an advertised
+// service, or "": svc: globs the label, a port rule matches when one of the
+// service's advertised proto:port ranges fully covers it, and tag: globs the
+// ACL tags of the peers hosting it (hostTags, see serviceHostTags).
+func autoSvcRule(rules []string, svcName string, sd tailcfg.ServiceDetails, hostTags []string) string {
+	for _, rule := range rules {
+		switch {
+		case strings.HasPrefix(rule, "svc:"):
+			if svcRuleMatches(rule, svcName) {
+				return rule
+			}
+		case strings.HasPrefix(rule, "tcp:"), strings.HasPrefix(rule, "udp:"):
+			if portRuleMatches(rule, sd.Ports) {
+				return rule
+			}
+		case strings.HasPrefix(rule, "tag:"):
+			if tagRuleMatches(rule, hostTags) {
+				return rule
+			}
+		}
+	}
+	return ""
+}
+
+// tagRuleMatches reports whether a tag: rule (a glob over the full
+// "tag:name", so tag:pam* covers tag:pam-db) matches any of the tags.
+func tagRuleMatches(rule string, tags []string) bool {
+	for _, t := range tags {
+		if ok, err := path.Match(rule, t); err == nil && ok {
 			return true
 		}
 	}
 	return false
 }
 
-// autoSvcMatched reports whether any svc: or tcp:/udp: auto rule selects an
-// advertised service: svc: globs the label, a port rule matches when one of
-// the service's advertised proto:port ranges fully covers it.
-func autoSvcMatched(rules []string, svcName string, sd tailcfg.ServiceDetails) bool {
-	for _, rule := range rules {
-		switch {
-		case strings.HasPrefix(rule, "svc:"):
-			if svcRuleMatches(rule, svcName) {
-				return true
+// serviceHostTags gives each advertised service the ACL tags of the peers
+// hosting it. ServiceDetails carries no tags, but control routes a service
+// VIP to its hosts, so a host lists the VIP in its AllowedIPs. Only exact
+// single-IP entries count: an exit node's 0.0.0.0/0 or a subnet route that
+// happens to cover the VIP must not tag every service.
+func serviceHostTags(st *ipnstate.Status, services map[tailcfg.ServiceName]tailcfg.ServiceDetails) map[tailcfg.ServiceName][]string {
+	if st == nil || len(services) == 0 {
+		return nil
+	}
+	byVIP := map[netip.Addr][]tailcfg.ServiceName{}
+	for name, sd := range services {
+		for _, a := range sd.Addrs {
+			byVIP[a] = append(byVIP[a], name)
+		}
+	}
+	out := map[tailcfg.ServiceName][]string{}
+	for _, p := range st.Peer {
+		if isMullvad(p.DNSName) || p.Tags == nil || p.AllowedIPs == nil {
+			continue
+		}
+		for _, pfx := range p.AllowedIPs.All() {
+			if !pfx.IsSingleIP() {
+				continue
 			}
-		case strings.HasPrefix(rule, "tcp:"), strings.HasPrefix(rule, "udp:"):
-			if portRuleMatches(rule, sd.Ports) {
-				return true
+			for _, name := range byVIP[pfx.Addr()] {
+				for _, t := range p.Tags.All() {
+					if !slices.Contains(out[name], t) {
+						out[name] = append(out[name], t)
+					}
+				}
 			}
 		}
 	}
-	return false
+	return out
 }
