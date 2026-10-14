@@ -250,12 +250,15 @@ The daemon serves a small control panel at **<http://127.0.0.1:8123>** (knob:
 layout, hash routes:
 
 - **Overview** (`#/`) — a summary line (tailnets, running,
-  peers up/total, advertised services, selected) then one row per tailnet
-  (state, suffix, domain, hostname, node IP, peers up/total, services,
-  selected, DNS-registered dot). Click a row to drill into that tailnet;
+  peers up/total and selected, advertised services and selected, exposed)
+  then one row per tailnet (state, suffix, domain, hostname, node IP, peers
+  up/total · selected, services · selected, **exposed** live/selected —
+  amber when some selections didn't make it into the hosts block — allow-all
+  and auto-rule count when set, DNS-registered dot). Click a row to drill into that tailnet;
   **Enable / Disable** starts or stops it directly, preserving login state.
 - **Tailnet detail** (`#/tailnet/<name>`) — a breadcrumb back to the overview,
-  then **Peers**: name/FQDN filter, a 200-row render cap with a "show all"
+  then **Peers**: selected peers first in their own section (never capped),
+  name/FQDN filter, a 200-row render cap on the rest with a "show all"
   toggle, a **hide inactive** toggle (hides offline peers), per-row selection
   checkboxes, a **tags** column whose chips toggle `tag:` auto-select rules in
   one click, a **clear all** button (unselects every peer *and* service on the

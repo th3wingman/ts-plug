@@ -314,7 +314,8 @@ code {
   border-radius: 8px;
   font-size: 14px;
 }
-.stats .fact.is-stale .fact__value {
+.stats .fact.is-stale .fact__value,
+.fact.is-short .fact__value {
   color: var(--warn);
 }
 
@@ -458,6 +459,17 @@ td.col-fqdn:hover {
 }
 tr.is-down td {
   color: var(--muted);
+}
+tr.section-row td {
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-top: 12px;
+}
+tbody tr.section-row:hover {
+  background: none;
 }
 tbody tr:hover {
   background: #1c2431;
