@@ -35,6 +35,6 @@ tsnet is userspace WireGuard: **no `/dev/net/tun`, no `NET_ADMIN`**. The base is
 Debian (not Alpine) because the keepalive `-- /bin/sleep infinity` needs GNU
 coreutils `sleep`.
 
-> Requires the `-border0` / `-header-map` / `-upstream-timeout` flags. Build from a
+> Requires the `-border0` / `-header-map` / `-response-header-timeout` flags. Build from a
 > ref that includes them (the `ts-plug/header-map` work), not a bare `main` that
 > predates it.

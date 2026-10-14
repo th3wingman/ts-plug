@@ -54,7 +54,9 @@ var (
 	flagHeaderMap = &HeaderMapFlag{}
 	flagBorder0   = flag.Bool("border0", false, "Map identity headers to the Border0 set (X-Auth-Email, X-Auth-Name, X-Auth-Picture)")
 
-	flagUpstreamTimeout = flag.Duration("upstream-timeout", 30*time.Second, "Max time for the upstream to start responding (0 = no timeout)")
+	flagDialTimeout           = flag.Duration("dial-timeout", 2*time.Second, "Reverse-proxy dial timeout to the upstream (0 = no limit)")
+	flagResponseHeaderTimeout = flag.Duration("response-header-timeout", time.Second, "Reverse-proxy response-header timeout (0 = no limit; useful for streaming / slow-first-byte upstreams)")
+	flagIdleConnTimeout       = flag.Duration("idle-conn-timeout", 0, "Reverse-proxy idle connection timeout (0 = no limit)")
 )
 
 func init() {
@@ -93,6 +95,17 @@ func main() {
 	if len(cmdArgs) == 0 {
 		slog.Error("no command to run")
 		os.Exit(1)
+	}
+
+	for name, d := range map[string]time.Duration{
+		"dial-timeout":            *flagDialTimeout,
+		"response-header-timeout": *flagResponseHeaderTimeout,
+		"idle-conn-timeout":       *flagIdleConnTimeout,
+	} {
+		if d < 0 {
+			slog.Error("negative duration not allowed", "flag", name, "value", d)
+			os.Exit(1)
+		}
 	}
 
 	// Promote boolean enable flags to their default port mapping first,
@@ -489,10 +502,11 @@ func createReverseProxy(portMap *PortMapFlag) *httputil.ReverseProxy {
 		os.Exit(1)
 	}
 
-	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	dialer := &net.Dialer{Timeout: *flagDialTimeout}
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
-		ResponseHeaderTimeout: *flagUpstreamTimeout,
+		ResponseHeaderTimeout: *flagResponseHeaderTimeout,
+		IdleConnTimeout:       *flagIdleConnTimeout,
 	}
 	if path := portMap.OutPath; path != "" {
 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {

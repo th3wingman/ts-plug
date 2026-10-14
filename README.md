@@ -98,7 +98,7 @@ ts-plug -hn myapp -header-map login=X-Auth-Email,name=X-Auth-Name -- ./myapp
 # Border0 preset: X-Auth-Email, X-Auth-Name, X-Auth-Picture
 ts-plug -hn myapp -border0 -https-port 443:8181 -- ./myapp
 ```
-Mapped headers get the same overwrite-always treatment as the `Tailscale-User-*` set. With `-public`, public visitors arrive with blank identity headers — make sure the upstream has a fallback auth tier. Slow upstreams (e.g. LLM apps) can raise `-upstream-timeout` (default 30s) to allow longer time-to-first-byte.
+Mapped headers get the same overwrite-always treatment as the `Tailscale-User-*` set. With `-public`, public visitors arrive with blank identity headers — make sure the upstream has a fallback auth tier. Slow upstreams (e.g. LLM apps) can raise `-response-header-timeout` (default 1s; 0 = no limit) to allow longer time-to-first-byte. `-dial-timeout` (2s) and `-idle-conn-timeout` (0) are also tunable.
 
 **ts-unplug** provides:
 - Reverse proxy from tailnet to localhost
