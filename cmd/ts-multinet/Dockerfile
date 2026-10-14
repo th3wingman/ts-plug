@@ -1,6 +1,6 @@
 # Build context is the repo root (needs go.mod/go.sum):
 #   docker build -f cmd/ts-multinet/Dockerfile -t ts-multinet .
-FROM golang:1.26 AS build
+FROM golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -8,7 +8,7 @@ COPY . .
 # Static (CGO off) so it runs on Alpine/musl unchanged.
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/ts-multinet ./cmd/ts-multinet
 
-FROM alpine:3.21
+FROM alpine:3.24
 # iproute2 is REQUIRED (the daemon shells out to `ip`); the rest is a human
 # toolbox so `docker exec -it <c> bash` is actually useful for validation.
 RUN apk add --no-cache \
