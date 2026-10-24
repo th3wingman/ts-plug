@@ -144,6 +144,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/ts-multinet -config /etc/ts-multinet/config.json
+ExecStopPost=/usr/local/bin/ts-multinet -config /etc/ts-multinet/config.json cleanup
 Restart=on-failure
 StateDirectory=ts-multinet
 

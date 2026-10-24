@@ -98,6 +98,13 @@ func main() {
 
 	setLogLevel(*flagLog)
 
+	// cleanup runs locally (systemd ExecStopPost): the daemon is already gone,
+	// so there is no control socket to ask.
+	if args := flag.Args(); len(args) >= 1 && args[0] == "cleanup" {
+		runCleanup(*flagConfig)
+		return
+	}
+
 	cfg, err := loadConfig(*flagConfig)
 	if err != nil {
 		slog.Error("config", "err", err)
@@ -339,7 +346,26 @@ func main() {
 	for _, tn := range daemon.liveTailnets() {
 		tn.Close()
 	}
+	if err := removeHostsBlock(daemon.hostsFile); err != nil {
+		slog.Error("hosts block removal failed", "path", daemon.hostsFile, "err", err)
+	}
 	rs.revertAll()
+}
+
+// runCleanup removes the /etc/hosts managed block a dead daemon left behind.
+// An unreadable config falls back to /etc/hosts: crash cleanup must not
+// depend on the config being intact.
+func runCleanup(cfgPath string) {
+	hostsFile := "/etc/hosts"
+	if cfg, err := loadConfig(cfgPath); err != nil {
+		slog.Warn("cleanup: config unreadable, using /etc/hosts", "config", cfgPath, "err", err)
+	} else {
+		hostsFile = orDefault(cfg.HostsFile, hostsFile)
+	}
+	if err := removeHostsBlock(hostsFile); err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup: remove hosts block from %s: %v\n", hostsFile, err)
+		os.Exit(1)
+	}
 }
 
 func usage() {
@@ -369,9 +395,10 @@ usage:
   ts-multinet [flags] remove <name>                 permanently delete a tailnet, its local keys, selections and settings
   ts-multinet [flags] enable <tailnet>              start a disabled tailnet (node state kept — no re-login)
   ts-multinet [flags] disable <tailnet>             stop a tailnet without unprovisioning (state kept)
+  ts-multinet [flags] cleanup                       remove the /etc/hosts block a stopped/crashed daemon left (local; no daemon)
 
-(every verb above talks to the running daemon over its control socket; only a
-bare "ts-multinet" invocation runs the daemon itself. Config edits — tailnets
+(every verb above except cleanup talks to the running daemon over its control
+socket; only a bare "ts-multinet" invocation runs the daemon itself. Config edits — tailnets
 included — apply live via 'reload'; only globals (mtu, dns_listen,
 upstream_dns, state_dir, hosts_file, ui_listen) need a service restart.)
 

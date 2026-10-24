@@ -161,3 +161,72 @@ func TestHostsLineSkipsDuplicateNativeName(t *testing.T) {
 		t.Fatalf("hostsLine = %q, want %q", got, want)
 	}
 }
+
+// write→remove must hand back the original file; a file without a trailing
+// newline comes back with exactly one (the shared normalization).
+func TestRemoveHostsBlockRoundTrip(t *testing.T) {
+	entries := []hostsEntry{{IP: "198.18.1.5", Alias: "a", FQDN: "a.tail.ts.net", Tailnet: "skynet"}}
+	for _, tc := range []struct{ name, original, want string }{
+		{"trailing newline", "127.0.0.1\tlocalhost\n::1\tlocalhost\n", "127.0.0.1\tlocalhost\n::1\tlocalhost\n"},
+		{"no trailing newline", "127.0.0.1\tlocalhost", "127.0.0.1\tlocalhost\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hosts")
+			if err := os.WriteFile(path, []byte(tc.original), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeHostsBlock(path, entries); err != nil {
+				t.Fatal(err)
+			}
+			if err := removeHostsBlock(path); err != nil {
+				t.Fatal(err)
+			}
+			b, _ := os.ReadFile(path)
+			if string(b) != tc.want {
+				t.Errorf("got %q, want %q", b, tc.want)
+			}
+			if fi, _ := os.Stat(path); fi.Mode().Perm() != 0600 {
+				t.Errorf("perms %v, want 0600", fi.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestRemoveHostsBlockNoBlockIsNoop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	original := "127.0.0.1\tlocalhost" // unnormalized: any write would add a newline
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeHostsBlock(path); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != original {
+		t.Errorf("file touched: %q", b)
+	}
+}
+
+func TestRemoveHostsBlockMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	if err := removeHostsBlock(path); err != nil {
+		t.Fatalf("missing file: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("missing file must not be created: %v", err)
+	}
+}
+
+func TestRemoveHostsBlockMiddlePreservesSurroundings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	content := "127.0.0.1\tlocalhost\n\n" + hostsBegin + "\n198.18.1.5 a  # ts-multinet (skynet)\n" + hostsEnd + "\n10.0.0.1\tnas\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeHostsBlock(path); err != nil {
+		t.Fatal(err)
+	}
+	want := "127.0.0.1\tlocalhost\n\n10.0.0.1\tnas\n"
+	if b, _ := os.ReadFile(path); string(b) != want {
+		t.Errorf("got %q, want %q", b, want)
+	}
+}
