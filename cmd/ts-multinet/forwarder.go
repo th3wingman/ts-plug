@@ -165,8 +165,11 @@ func (f *forwarder) stackToTun(ctx context.Context) error {
 	}
 }
 
-// handle terminates an inbound SYN locally and splices the connection to a
-// tailnet dial of the original hostname.
+// handle dials the original hostname over the tailnet first and only then
+// accepts the inbound SYN, so the app's connect() reflects the real peer: a
+// failed dial is a reset (connection refused), not a connect that succeeds
+// and then EOFs. gVisor runs each request on its own goroutine and ignores
+// SYN retransmits while it is pending, so dialing here blocks nothing else.
 func (f *forwarder) handle(req *tcp.ForwarderRequest) {
 	id := req.ID()
 	dstIP := net.IP(id.LocalAddress.AsSlice())
@@ -179,45 +182,56 @@ func (f *forwarder) handle(req *tcp.ForwarderRequest) {
 		return
 	}
 
+	remote, target, ok := f.dialTailnet(host, dstPort)
+	if !ok {
+		req.Complete(true) // RST: the app sees connection refused
+		return
+	}
+
 	var wq waiter.Queue
 	ep, tcpErr := req.CreateEndpoint(&wq)
 	if tcpErr != nil {
 		slog.Error("CreateEndpoint", "tailnet", f.name, "err", tcpErr)
+		remote.Close()
 		req.Complete(true)
 		return
 	}
 	req.Complete(false)
 
-	// Resolution + dial happen in the splice goroutine, off the packet path.
-	go f.splice(gonet.NewTCPConn(&wq, ep), host, dstPort)
+	slog.Info("proxying", "tailnet", f.name, "host", host, "via", target)
+	go f.splice(gonet.NewTCPConn(&wq, ep), remote)
 }
 
-func (f *forwarder) splice(local net.Conn, host string, port uint16) {
-	defer local.Close()
-
+// dialTailnet resolves host to its real tailnet IP via the peer list and dials
+// it. Every failure is logged here; ok=false means the caller should reset.
+func (f *forwarder) dialTailnet(host string, port uint16) (remote net.Conn, target string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	ip, ok := f.resolve(ctx, host)
 	if !ok {
 		slog.Warn("no tailnet IP for host", "tailnet", f.name, "host", host)
-		return
+		return nil, "", false
 	}
 	// Never dial back into a synthetic range — that's the feedback loop.
 	if f.reg.isSynthetic(net.ParseIP(ip)) {
 		slog.Error("resolved to synthetic IP; refusing to loop", "tailnet", f.name, "host", host, "ip", ip)
-		return
+		return nil, "", false
 	}
 
-	target := net.JoinHostPort(ip, strconv.Itoa(int(port)))
+	target = net.JoinHostPort(ip, strconv.Itoa(int(port)))
 	remote, err := f.dial(ctx, "tcp", target)
 	if err != nil {
 		slog.Warn("tailnet dial failed", "tailnet", f.name, "host", host, "target", target, "err", err)
-		return
+		return nil, target, false
 	}
-	defer remote.Close()
+	return remote, target, true
+}
 
-	slog.Info("proxying", "tailnet", f.name, "host", host, "via", target)
+// splice copies both ways until either side finishes, then closes both.
+func (f *forwarder) splice(local, remote net.Conn) {
+	defer local.Close()
+	defer remote.Close()
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(remote, local); done <- struct{}{} }()
 	go func() { io.Copy(local, remote); done <- struct{}{} }()

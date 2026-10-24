@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,4 +243,54 @@ func TestForwarderUnknownSyntheticRST(t *testing.T) {
 func TestForwarderLargeMTU(t *testing.T) {
 	t.Run("tcp", func(t *testing.T) { tcpEcho(t, 65520, 1<<20) })
 	t.Run("udp", func(t *testing.T) { udpEcho(t, 65520, 8000) })
+}
+
+// A failed tailnet dial must surface as connection refused at connect time —
+// not a connect that succeeds and then EOFs.
+func TestForwarderDialFailRefuses(t *testing.T) {
+	fail := func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("peer offline") }
+	n := newTestNet(t, 1280, fail)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := n.dialTCP(ctx, n.peer, 22)
+	if err == nil {
+		c.Close()
+		t.Fatal("connect succeeded although the tailnet dial failed")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("want connection refused, got %v", err)
+	}
+}
+
+// The app's connect stays pending until the tailnet dial completes.
+func TestForwarderDialBeforeAccept(t *testing.T) {
+	port := tcpEchoServer(t)
+	release := make(chan struct{})
+	gated := func(ctx context.Context, network, address string) (net.Conn, error) {
+		<-release
+		return localDial(ctx, network, address)
+	}
+	n := newTestNet(t, 1280, gated)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	type result struct {
+		c   net.Conn
+		err error
+	}
+	done := make(chan result, 1)
+	go func() { c, err := n.dialTCP(ctx, n.peer, port); done <- result{c, err} }()
+	select {
+	case r := <-done:
+		if r.c != nil {
+			r.c.Close()
+		}
+		t.Fatalf("connect returned before the tailnet dial: %v", r.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("connect after dial: %v", r.err)
+	}
+	r.c.Close()
 }
