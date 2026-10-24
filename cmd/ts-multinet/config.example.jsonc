@@ -24,7 +24,7 @@
   "state_dir": "/var/lib/ts-multinet",
 
   // everything else is optional — defaults shown:
-  // "mtu": 1280,
+  // "mtu": 1280,                    // local TUN hop only (1280..65535); larger = fewer packets, tailnet MTU unaffected
   // "dns_listen": "127.0.0.1:53",
   // "upstream_dns": "1.1.1.1",        // non-tailnet names; default: first nameserver in /etc/resolv.conf
   // "hosts_file": "/etc/hosts",

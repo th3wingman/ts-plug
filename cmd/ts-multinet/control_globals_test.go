@@ -188,7 +188,7 @@ func TestUpdateConfigRejectsInvalidValues(t *testing.T) {
 	d, cfgPath := stubDaemon(t)
 	for _, body := range []string{
 		`{"mtu": 100}`,                        // below the WireGuard minimum
-		`{"mtu": 9001}`,                       // above the jumbo ceiling
+		`{"mtu": 65536}`,                      // above the TUN ceiling
 		`{"dns_listen": "127.0.0.1"}`,         // no port
 		`{"ui_listen": "nope"}`,               // not host:port
 		`{"ui_listen": ":8123"}`,              // empty host is ambiguous
@@ -233,5 +233,19 @@ func TestValidGlobalsHelpers(t *testing.T) {
 	}
 	if !filepath.IsAbs("/etc/hosts") {
 		t.Fatal("test premise: /etc/hosts is absolute")
+	}
+}
+
+// mtu bounds the local TUN hop only, so the full TUN range is accepted.
+func TestUpdateConfigMTUBounds(t *testing.T) {
+	d, _ := stubDaemon(t)
+	for body, want := range map[string]int{
+		`{"mtu": 65535}`: http.StatusOK,
+		`{"mtu": 9000}`:  http.StatusOK,
+		`{"mtu": 1279}`:  http.StatusBadRequest,
+	} {
+		if code, resp := updateConfig(t, d, body); code != want {
+			t.Errorf("%s: got %d (%s), want %d", body, code, resp, want)
+		}
 	}
 }

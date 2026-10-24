@@ -40,3 +40,23 @@ func TestCloseWaitsForGoroutines(t *testing.T) {
 		t.Fatal("Close returned before both goroutines exited")
 	}
 }
+
+func TestNewSkipsLogsOnlyChanges(t *testing.T) {
+	tn := &Tailnet{}
+	a := []string{"x: not a peer"}
+	if tn.newSkips(a, 0) {
+		t.Fatal("logged before the netmap had peers")
+	}
+	if !tn.newSkips(a, 5) {
+		t.Fatal("first real skip set not logged")
+	}
+	if tn.newSkips(a, 5) {
+		t.Fatal("unchanged skip set logged again")
+	}
+	if !tn.newSkips(append(a, "y: not a peer"), 5) {
+		t.Fatal("changed skip set not logged")
+	}
+	if !tn.newSkips(nil, 5) || tn.newSkips(nil, 5) {
+		t.Fatal("clearing should register once, then stay quiet")
+	}
+}

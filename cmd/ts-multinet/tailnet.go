@@ -47,6 +47,8 @@ type Tailnet struct {
 	loginURL string
 	applied  int  // selected resources currently in the hosts block
 	fwdDead  bool // forwarder datapath exited unexpectedly (watchdog restarts)
+
+	skipped string // last logged selection-skip set; guarded by Daemon.mu (applySelections)
 }
 
 // ambientAuthEnvs are process-wide credentials tsnet would silently use for
@@ -302,6 +304,23 @@ func (t *Tailnet) status() (state, loginURL string) {
 }
 
 // setApplied records how many of this tailnet's selections are live.
+// newSkips reports whether applySelections should log this skip set. Every
+// netmap push re-applies, so only a changed set is logged. Right after
+// Running the peer list can still be empty and every selection would read
+// "not a peer" for a moment, so nothing is logged until the netmap lands.
+// Caller holds Daemon.mu.
+func (t *Tailnet) newSkips(errs []string, peers int) bool {
+	if peers == 0 {
+		return false
+	}
+	skipped := strings.Join(errs, "\n")
+	if skipped == t.skipped {
+		return false
+	}
+	t.skipped = skipped
+	return true
+}
+
 func (t *Tailnet) setApplied(n int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -104,17 +104,9 @@ func writeHostsBlock(path string, entries []hostsEntry) error {
 	block = append(block, hostsEnd)
 
 	var out []string
-	begin, end := -1, -1
-	for i, l := range lines {
-		switch strings.TrimSpace(l) {
-		case hostsBegin:
-			begin = i
-		case hostsEnd:
-			end = i
-		}
-	}
+	begin, end := hostsBlockSpan(lines)
 	switch {
-	case begin >= 0 && end >= begin:
+	case begin >= 0:
 		out = append(out, lines[:begin]...)
 		out = append(out, block...)
 		out = append(out, lines[end+1:]...)
@@ -127,6 +119,31 @@ func writeHostsBlock(path string, entries []hostsEntry) error {
 		out = append(out, "")
 		out = append(out, block...)
 	}
+	return writeHostsLines(path, out, content, err == nil)
+}
+
+// hostsBlockSpan returns the line indexes of the last begin and end markers,
+// or -1, -1 when there is no well-formed block.
+func hostsBlockSpan(lines []string) (begin, end int) {
+	begin, end = -1, -1
+	for i, l := range lines {
+		switch strings.TrimSpace(l) {
+		case hostsBegin:
+			begin = i
+		case hostsEnd:
+			end = i
+		}
+	}
+	if begin < 0 || end < begin {
+		return -1, -1
+	}
+	return begin, end
+}
+
+// writeHostsLines normalizes out to exactly one trailing newline and writes
+// it to path, preserving the existing file's permissions; content/existed
+// describe the file as read, so an unchanged result skips the write.
+func writeHostsLines(path string, out []string, content []byte, existed bool) error {
 	// Normalize: exactly one trailing newline, so rewrites are byte-stable.
 	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
 		out = out[:len(out)-1]
@@ -136,15 +153,50 @@ func writeHostsBlock(path string, entries []hostsEntry) error {
 	// Netmap-driven re-applies can land with nothing changed (a peer flapped,
 	// a rule matched the same set): byte-stable output means a no-op write is
 	// detectable, and skipping it keeps /etc/hosts quiet for watchers.
-	if err == nil && strings.Join(out, "\n") == string(content) {
+	if existed && strings.Join(out, "\n") == string(content) {
 		return nil
 	}
 
 	mode := os.FileMode(0644)
-	if err == nil {
+	if existed {
 		if fi, statErr := os.Stat(path); statErr == nil {
 			mode = fi.Mode().Perm()
 		}
 	}
 	return os.WriteFile(path, []byte(strings.Join(out, "\n")), mode)
+}
+
+// removeHostsBlock deletes the managed block (markers included) from path,
+// plus the blank separator line writeHostsBlock puts before an appended
+// block, so write→remove round-trips to the original file (modulo trailing
+// newline normalization). A missing file or a file without a block is left
+// untouched. Stale entries point at synthetic IPs that stop routing once the
+// daemon is gone, so this runs on shutdown and from `ts-multinet cleanup`.
+func removeHostsBlock(path string) error {
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	lines := strings.Split(string(content), "\n")
+	begin, end := hostsBlockSpan(lines)
+	if begin < 0 {
+		return nil
+	}
+	atEOF := true
+	for _, l := range lines[end+1:] {
+		if strings.TrimSpace(l) != "" {
+			atEOF = false
+			break
+		}
+	}
+	// Only an appended block (always last) carries the separator; a block
+	// in the middle keeps whatever spacing the file had around it.
+	cut := begin
+	if atEOF && cut > 0 && strings.TrimSpace(lines[cut-1]) == "" {
+		cut--
+	}
+	out := append(append([]string{}, lines[:cut]...), lines[end+1:]...)
+	return writeHostsLines(path, out, content, true)
 }

@@ -229,9 +229,15 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   Everything outside the markers is preserved. IPs are allocated in sorted
   name order, so they're stable across restarts. The per-tailnet
   `"domain_hosts"` option (Settings-tab checkbox, or the config) forces the
-  `.<domain>` suffix on every entry — always off by default.
+  `.<domain>` suffix on every entry — always off by default. The block is
+  removed on graceful shutdown; after a crash, `sudo ts-multinet cleanup`
+  removes it without a running daemon (the systemd unit runs it as
+  `ExecStopPost`), so stale names never point at dead synthetic IPs.
 
 - `tun` names must be ≤15 chars (kernel `IFNAMSIZ`).
+- `mtu` (1280..65535, default 1280) sizes only the local `tsmN` hop, where
+  TCP is terminated — tsnet keeps its own tailnet MTU. A larger value means
+  fewer, bigger packets across the TUN (try 9000 or 65520 for bulk transfers).
 - Non-tailnet DNS is forwarded to the upstream inherited from the original
   `/etc/resolv.conf` (override with `"upstream_dns"`).
 - **Custom domains** — each tailnet's `domain` (default: its `name`) is a
@@ -369,6 +375,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/ts-multinet -config /etc/ts-multinet/config.json
+ExecStopPost=/usr/local/bin/ts-multinet -config /etc/ts-multinet/config.json cleanup
 Restart=on-failure
 StateDirectory=ts-multinet
 
@@ -380,6 +387,11 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload && sudo systemctl enable --now ts-multinet
 journalctl -u ts-multinet -f           # watch the tailnets come up
 ```
+
+`ExecStopPost` runs `ts-multinet cleanup` — the one verb that works locally,
+without the control socket — so a crashed or killed daemon doesn't leave a
+stale `/etc/hosts` block behind. It reads `hosts_file` from `-config` and
+falls back to `/etc/hosts` if the config can't be loaded.
 
 Selection changes: `sudo ts-multinet select/forget <tailnet> <peer>...`,
 `sudo ts-multinet reload`, or the web UI — all patch the config in place and
