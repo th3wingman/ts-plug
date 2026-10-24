@@ -29,7 +29,7 @@ import (
 // Config is the on-disk JSON. Nodes authenticate with a one-time browser login
 // and persist state under state_dir — no authkeys, no secrets in the file.
 type Config struct {
-	MTU         int           `json:"mtu,omitempty"`          // default 1280
+	MTU         int           `json:"mtu,omitempty"`          // default 1280; local TUN hop only (1280..65535), tsnet keeps its own
 	DNSListen   string        `json:"dns_listen,omitempty"`   // default 127.0.0.1:53
 	UpstreamDNS string        `json:"upstream_dns,omitempty"` // for non-tailnet names; default: first nameserver in /etc/resolv.conf, else 1.1.1.1
 	StateDir    string        `json:"state_dir,omitempty"`    // base dir for per-tailnet tsnet state; default .state

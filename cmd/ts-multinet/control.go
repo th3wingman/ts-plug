@@ -1421,11 +1421,13 @@ func (d *Daemon) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, cfg)
 }
 
-// minMTU/maxMTU keep mtu edits inside what the datapath can actually carry:
-// WireGuard needs at least 1280, and 9000 is the practical ceiling.
+// minMTU/maxMTU bound the local hop only: mtu sizes the tsmN TUN and our
+// gVisor stack, where TCP is terminated, so it is independent of tsnet's own
+// WireGuard MTU. 1280 is the IPv6 minimum; 65535 is the TUN/IPv4 maximum.
+// Larger means fewer, bigger packets across the TUN.
 const (
 	minMTU = 1280
-	maxMTU = 9000
+	maxMTU = 65535
 )
 
 // globalsReq is the POST /config body: the daemon-wide settings only. Every

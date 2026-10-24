@@ -235,3 +235,10 @@ func TestForwarderUnknownSyntheticRST(t *testing.T) {
 		t.Fatalf("connect hung until timeout instead of being reset: %v", err)
 	}
 }
+
+// A large local MTU carries big segments and datagrams end to end: the TUN
+// hop is independent of the tailnet MTU.
+func TestForwarderLargeMTU(t *testing.T) {
+	t.Run("tcp", func(t *testing.T) { tcpEcho(t, 65520, 1<<20) })
+	t.Run("udp", func(t *testing.T) { udpEcho(t, 65520, 8000) })
+}

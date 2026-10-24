@@ -235,6 +235,9 @@ hosts_file, ui_listen, suffix, domain, enabled) inline with its default.
   `ExecStopPost`), so stale names never point at dead synthetic IPs.
 
 - `tun` names must be ≤15 chars (kernel `IFNAMSIZ`).
+- `mtu` (1280..65535, default 1280) sizes only the local `tsmN` hop, where
+  TCP is terminated — tsnet keeps its own tailnet MTU. A larger value means
+  fewer, bigger packets across the TUN (try 9000 or 65520 for bulk transfers).
 - Non-tailnet DNS is forwarded to the upstream inherited from the original
   `/etc/resolv.conf` (override with `"upstream_dns"`).
 - **Custom domains** — each tailnet's `domain` (default: its `name`) is a
