@@ -462,8 +462,10 @@ func (d *Daemon) applySelections() {
 			slog.Warn("service discovery failed", "name", tn.conf.Name, "err", err)
 		}
 		resolved, errs, changed := resolveSelections(tn.suffix, conf, st, svcs, pins)
-		for _, e := range errs {
-			slog.Error("selection skipped", "name", tn.conf.Name, "resource", e)
+		if tn.newSkips(errs, len(st.Peer)) {
+			for _, e := range errs {
+				slog.Error("selection skipped", "name", tn.conf.Name, "resource", e)
+			}
 		}
 		if changed {
 			if err := savePins(tn.stateDir, pins); err != nil {

@@ -343,13 +343,15 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("shutting down")
+	// Revert resolved while the TUNs still exist (same order as stopTailnet):
+	// after Close the links are gone and resolvectl fails with No such device.
+	rs.revertAll()
 	for _, tn := range daemon.liveTailnets() {
 		tn.Close()
 	}
 	if err := removeHostsBlock(daemon.hostsFile); err != nil {
 		slog.Error("hosts block removal failed", "path", daemon.hostsFile, "err", err)
 	}
-	rs.revertAll()
 }
 
 // runCleanup removes the /etc/hosts managed block a dead daemon left behind.
